@@ -19,11 +19,28 @@ function tokenize(text) {
     .filter(t => t.length >= 2 && !STOP.has(t) && !/^\d+$/.test(t));
 }
 
-/** 텍스트 → 빈도 상위 N개 토큰 배열 */
-function topKeywords(text, n = 15) {
+/**
+ * 단어 쌍(bigram) 생성 — 연속한 두 토큰을 하나의 구로 묶음
+ * "콘텐츠 기획"처럼 구 단위로 비교해야 "R&D 기획"과 구분 가능
+ */
+function makeBigrams(tokens) {
+  const result = [];
+  for (let i = 0; i < tokens.length - 1; i++) {
+    result.push(`${tokens[i]} ${tokens[i + 1]}`);
+  }
+  return result;
+}
+
+/**
+ * 텍스트 → 유니그램 + 바이그램 혼합 키워드 배열
+ * 바이그램은 weight×3 (구체적이어서 변별력이 훨씬 높음)
+ */
+function topKeywords(text, n = 20) {
   const tokens = tokenize(text);
   const freq = new Map();
-  for (const t of tokens) freq.set(t, (freq.get(t) || 0) + 1);
+  for (const t of tokens)            freq.set(t, (freq.get(t) || 0) + 1);
+  for (const bg of makeBigrams(tokens)) freq.set(bg, (freq.get(bg) || 0) + 3);
+
   return [...freq.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, n)
@@ -32,16 +49,30 @@ function topKeywords(text, n = 15) {
 
 /**
  * haystack(공고 제목)에 keywords 중 몇 개가 매칭되는지 → 0~1
- * - 1개 매칭: 0.33, 2개: 0.67, 3개 이상: 1.0
+ *
+ * 바이그램(구)이 1개라도 맞으면 0.5, 2개 이상 맞으면 1.0
+ * 유니그램만 맞을 경우: 2개 이상 필요 (단어 하나만 맞는 건 노이즈 취급)
  */
 function matchScore(haystack, keywords) {
   if (!keywords || keywords.length === 0) return 0;
   const hay = haystack.toLowerCase();
-  let count = 0;
+
+  let bigramHit = 0;
+  let unigramHit = 0;
+
   for (const { token } of keywords) {
-    if (hay.includes(token)) count++;
+    if (!hay.includes(token)) continue;
+    if (token.includes(' ')) bigramHit++;   // 구(2단어 이상)
+    else                     unigramHit++;
   }
-  return Math.min(1, count / Math.max(1, Math.min(3, keywords.length)));
+
+  // 구 매칭 우선: 구 1개 = 0.5, 2개 이상 = 1.0
+  if (bigramHit >= 2) return 1.0;
+  if (bigramHit === 1) return 0.5;
+  // 유니그램만: 2개 이상이어야 의미 있음
+  if (unigramHit >= 3) return 0.7;
+  if (unigramHit === 2) return 0.35;
+  return 0;  // 단어 1개만 매칭 = 점수 없음
 }
 
 /**
