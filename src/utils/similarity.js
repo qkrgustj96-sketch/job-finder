@@ -95,44 +95,36 @@ export function extractRefSections(parsedJob) {
 }
 
 /**
- * 100점 만점 유사도 스코어링
- *   업무내용(40) + 산업군(30) + 우대사항(15) + 자격요건(10) + 제목(5)
- *
- * 제목은 검색 풀을 모으는 데 이미 활용되었으므로 보조 점수만 부여.
- * 핵심은 실제로 하는 일(업무내용)과 같은 업계(산업군)의 일치 여부.
- *
- * @param {object} job - 스크래핑된 공고 { title, industry, ... }
- * @param {object} refSections - extractRefSections() 반환값
+ * rough 유사도 (상세 fetch 전 임시 점수) — 100점 만점
+ * 핵심 원칙: 업계 무관, 실제 하는 일이 비슷한지가 기준.
+ *   업무내용(65) + 우대사항(20) + 자격요건(10) + 산업군(5, 보조)
  */
 export function calcSimilarity(job, refSections) {
   if (!refSections) return 0;
 
   const hay = job.title.toLowerCase();
 
-  // 1. 업무내용 키워드가 공고 제목에 포함되는 정도 (40점)
-  const dutiesPts = matchScore(hay, refSections.dutiesKeywords) * 40;
+  // 1. 업무내용 키워드 → 공고 제목에서 확인 (65점)
+  const dutiesPts = matchScore(hay, refSections.dutiesKeywords) * 65;
 
-  // 2. 산업군 일치 (30점) — 스크래핑 공고의 industry 필드와 비교
+  // 2. 우대사항 키워드 (20점)
+  const preferPts = matchScore(hay, refSections.preferKeywords) * 20;
+
+  // 3. 자격요건 키워드 (10점)
+  const requirePts = matchScore(hay, refSections.requireKeywords) * 10;
+
+  // 4. 산업군 (5점) — 같은 업계면 소폭 가산
   let industryPts = 0;
   if (refSections.industry && job.industry) {
     const refInd = refSections.industry.toLowerCase();
     const jobInd = job.industry.toLowerCase();
     const refSlice = refInd.slice(0, 4);
-    const jobSlice = jobInd.slice(0, 4);
-    if (refSlice.length >= 2 && jobInd.includes(refSlice)) industryPts = 30;
-    else if (jobSlice.length >= 2 && refInd.includes(jobSlice)) industryPts = 30;
+    if (refSlice.length >= 2 && (jobInd.includes(refSlice) || refInd.includes(jobInd.slice(0, 4)))) {
+      industryPts = 5;
+    }
   }
 
-  // 3. 우대사항 키워드 (15점)
-  const preferPts = matchScore(hay, refSections.preferKeywords) * 15;
-
-  // 4. 자격요건 키워드 (10점)
-  const requirePts = matchScore(hay, refSections.requireKeywords) * 10;
-
-  // 5. 제목 유사도 (5점) — 보조
-  const titlePts = matchScore(hay, refSections.titleKeywords) * 5;
-
-  return Math.min(100, Math.round(dutiesPts + industryPts + preferPts + requirePts + titlePts));
+  return Math.min(100, Math.round(dutiesPts + preferPts + requirePts + industryPts));
 }
 
 /**
@@ -170,42 +162,43 @@ function textOverlap(textA, textB) {
 
 /**
  * 상세 내용 기반 100점 만점 유사도 — 업무내용끼리 직접 비교
- *   업무내용(40) + 산업군(30) + 우대사항(15) + 자격요건(10) + 제목(5)
  *
- * @param {object} refRaw   - 기준 공고 원본 섹션 { duties, requirements, preferred, industry }
+ * 핵심 원칙: 업계가 달라도 실제 하는 일(업무내용)이 비슷하면 높은 점수.
+ * 산업군은 동점일 때 약간의 가산점 역할만 함.
+ *
+ *   업무내용(65) + 우대사항(20) + 자격요건(10) + 산업군(5)
+ *
+ * @param {object} refRaw      - 기준 공고 원본 섹션 { duties, requirements, preferred, industry }
  * @param {object} jobSections - 스크래핑 공고 파싱 섹션 { duties, requirements, preferred }
  * @param {string} jobIndustry - 스크래핑 공고의 산업군 (listing에서 가져온 값)
- * @param {string} jobTitle    - 스크래핑 공고 제목 (보조)
- * @param {string} refTitle    - 기준 공고 제목 (보조)
+ * @param {string} jobTitle    - 스크래핑 공고 제목 (미사용, 서명 호환)
+ * @param {string} refTitle    - 기준 공고 제목 (미사용, 서명 호환)
  */
 export function calcSimilarityFull(refRaw, jobSections, jobIndustry, jobTitle = '', refTitle = '') {
   const { duties: rDuties = '', requirements: rReq = '', preferred: rPref = '', industry: rInd = '' } = refRaw || {};
   const { duties: jDuties = '', requirements: jReq = '', preferred: jPref = '' } = jobSections || {};
 
-  // 1. 업무내용 직접 비교 (40점)
-  const dutiesScore = textOverlap(rDuties, jDuties) * 40;
+  // 1. 업무내용 직접 비교 (65점) — 핵심: 업계 무관하게 실제 하는 일이 비슷한지
+  const dutiesScore = textOverlap(rDuties, jDuties) * 65;
 
-  // 2. 산업군 일치 (30점)
+  // 2. 우대사항 직접 비교 (20점) — 요구 역량이 비슷한지
+  const preferScore = textOverlap(rPref, jPref) * 20;
+
+  // 3. 자격요건 직접 비교 (10점)
+  const requireScore = textOverlap(rReq, jReq) * 10;
+
+  // 4. 산업군 (5점) — 같은 업계면 소폭 가산, 달라도 감점 없음
   let industryScore = 0;
   const rIndLow = rInd.toLowerCase();
   const jIndLow = (jobIndustry || '').toLowerCase();
   if (rIndLow && jIndLow) {
     const slice = rIndLow.slice(0, 4);
     if (slice.length >= 2 && (jIndLow.includes(slice) || rIndLow.includes(jIndLow.slice(0, 4)))) {
-      industryScore = 30;
+      industryScore = 5;
     }
   }
 
-  // 3. 우대사항 직접 비교 (15점)
-  const preferScore = textOverlap(rPref, jPref) * 15;
-
-  // 4. 자격요건 직접 비교 (10점)
-  const requireScore = textOverlap(rReq, jReq) * 10;
-
-  // 5. 제목 유사도 (5점) — 보조
-  const titleScore = textOverlap(refTitle, jobTitle) * 5;
-
-  return Math.min(100, Math.round(dutiesScore + industryScore + preferScore + requireScore + titleScore));
+  return Math.min(100, Math.round(dutiesScore + preferScore + requireScore + industryScore));
 }
 
 // ── 하위 호환성 ──────────────────────────────────────────────────
