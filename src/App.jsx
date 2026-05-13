@@ -6,7 +6,7 @@ import RefJobInput from './components/RefJobInput.jsx';
 import { SITE_CONFIGS, createJobStream } from './services/jobSites.js';
 import { applyExcludes } from './utils/filter.js';
 import { sortByScore } from './utils/scoring.js';
-import { extractRefSections, sortBySimilarity } from './utils/similarity.js';
+import { extractRefSections, sortBySimilarity, calcSimilarityFull } from './utils/similarity.js';
 
 const STORAGE_KEY = 'job_finder_saved';
 const PAGE_SIZE = 100;
@@ -63,9 +63,12 @@ export default function App() {
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError]   = useState('');
 
-  const esRef    = useRef(null);
-  const jobMap   = useRef(new Map());
-  const stateRef = useRef({});
+  const [enrichStatus, setEnrichStatus] = useState({ loading: false, done: 0, total: 0 });
+
+  const esRef       = useRef(null);
+  const jobMap      = useRef(new Map());
+  const stateRef    = useRef({});
+  const enrichedRef = useRef(false); // 현재 검색에서 enrich 실행 여부
 
   const savedIds = new Set(savedJobs.map(j => j.id));
 
@@ -118,8 +121,10 @@ export default function App() {
     setKeyword(kw);
     setJobs([]);
     setSiteErrors({});
+    setEnrichStatus({ loading: false, done: 0, total: 0 });
     setPage(1);
     jobMap.current.clear();
+    enrichedRef.current = false;
 
     const initialStatus = Object.fromEntries(selectedSites.map(s => [s, { status: 'loading', count: 0 }]));
     setSiteStatus(initialStatus);
@@ -177,6 +182,15 @@ export default function App() {
 
   useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
 
+  // 검색 완료 + 유사도 모드일 때 → 상세 비교 자동 시작
+  const prevLoadingRef = useRef(false);
+  useEffect(() => {
+    if (prevLoadingRef.current && !loading && stateRef.current.refJob?.rawSections) {
+      triggerEnrich();
+    }
+    prevLoadingRef.current = loading;
+  }, [loading, triggerEnrich]);
+
   // 공고 제목에서 검색 키워드 추출 (채용/모집 등 불필요 단어 제거 후 앞 2단어)
   const deriveSearchKeyword = (title) => {
     const clean = title
@@ -197,7 +211,12 @@ export default function App() {
 
       // 섹션별 키워드 추출 (제목·업무내용·산업군·우대사항·자격요건)
       const refSections = extractRefSections(data);
-      const newRefJob = { title: data.title, company: data.company, refSections };
+      const newRefJob = {
+        title: data.title,
+        company: data.company,
+        refSections,
+        rawSections: data.sections,  // 상세 비교용 원본 텍스트
+      };
 
       // refJob을 stateRef에 먼저 세팅 → handleSearch가 보존함
       stateRef.current.refJob = newRefJob;
@@ -224,6 +243,80 @@ export default function App() {
       setRefLoading(false);
     }
   }, [handleSearch]);
+
+  // 검색 완료 후 상위 30개 상세 페이지 fetch → 업무내용끼리 직접 비교
+  const triggerEnrich = useCallback(async () => {
+    const refJob = stateRef.current.refJob;
+    if (!refJob?.rawSections) return;
+    if (enrichedRef.current) return;
+    enrichedRef.current = true;
+
+    const allJobs = [...jobMap.current.values()];
+    const top30 = [...allJobs]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 30);
+
+    setEnrichStatus({ loading: true, done: 0, total: top30.length });
+
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${apiBase}/api/jobs/enrich`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobs: top30.map(j => ({ id: j.id, url: j.url })) }),
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let doneCount = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          if (!part.startsWith('data: ')) continue;
+          const data = JSON.parse(part.slice(6));
+          if (data.type === 'complete') break;
+
+          if (data.id && data.sections) {
+            const job = jobMap.current.get(data.id);
+            if (job) {
+              const fullScore = calcSimilarityFull(
+                refJob.rawSections, data.sections,
+                job.industry, job.title, refJob.title
+              );
+              jobMap.current.set(data.id, { ...job, score: fullScore, enriched: true });
+            }
+          }
+
+          doneCount++;
+          setEnrichStatus(prev => ({ ...prev, done: doneCount }));
+
+          // 3개마다 화면 업데이트
+          if (doneCount % 3 === 0) {
+            const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
+            const all = [...jobMap.current.values()];
+            const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
+            setJobs(sortBySimilarity(filtered, refJob.refSections));
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[enrich]', e.message);
+    }
+
+    // 최종 정렬
+    const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
+    const all = [...jobMap.current.values()];
+    const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
+    setJobs(sortBySimilarity(filtered, stateRef.current.refJob?.refSections));
+    setEnrichStatus(prev => ({ ...prev, loading: false }));
+  }, [applyAllFilters]);
 
   const clearRefJob = useCallback(() => {
     setRefJob(null);
@@ -296,6 +389,7 @@ export default function App() {
           refJob={refJob}
           loading={refLoading}
           error={refError}
+          enrichStatus={enrichStatus}
         />
 
         <SavedJobs jobs={savedJobs} onRemove={removeSaved} />

@@ -392,6 +392,8 @@ body {
 .ref-job-info strong { font-weight: 700; }
 .ref-job-info em { font-style: normal; color: #0369a1; }
 .ref-job-mode { font-size: 12px; color: #0ea5e9; margin-left: 6px; }
+.enrich-loading { color: #f59e0b; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 .ref-job-clear {
   white-space: nowrap;
   font-size: 13px;

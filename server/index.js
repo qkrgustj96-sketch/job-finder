@@ -58,6 +58,41 @@ app.get('/api/jobs/stream', async (req, res) => {
   }
 });
 
+// 공고 상세 내용 일괄 가져오기 — 유사도 상세 비교용 (SSE 스트리밍)
+app.post('/api/jobs/enrich', express.json(), async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  let closed = false;
+  req.on('close', () => { closed = true; });
+  const send = (data) => { if (!closed) res.write(`data: ${JSON.stringify(data)}\n\n`); };
+
+  const { jobs = [] } = req.body;
+  const limited = jobs.slice(0, 30); // 최대 30개
+
+  const CONCURRENCY = 5;
+  const queue = [...limited];
+
+  const workers = Array.from({ length: CONCURRENCY }, async () => {
+    while (queue.length > 0 && !closed) {
+      const job = queue.shift();
+      if (!job) break;
+      try {
+        const detail = await parseJobDetail(job.url);
+        send({ id: job.id, sections: detail.sections });
+      } catch (e) {
+        send({ id: job.id, sections: null });
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  if (!closed) { send({ type: 'complete' }); res.end(); }
+});
+
 // 공고 URL 파싱 엔드포인트
 app.get('/api/job/parse', async (req, res) => {
   const { url } = req.query;

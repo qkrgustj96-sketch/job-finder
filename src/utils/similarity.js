@@ -137,11 +137,75 @@ export function calcSimilarity(job, refSections) {
 
 /**
  * 기준 공고 기준으로 jobs 재정렬 (score 100점 만점)
+ * 이미 enriched(상세 비교 완료) 표시된 공고는 기존 score 유지
  */
 export function sortBySimilarity(jobs, refSections) {
   return [...jobs]
-    .map(j => ({ ...j, score: calcSimilarity(j, refSections) }))
-    .sort((a, b) => b.score - a.score);
+    .map(j => ({
+      ...j,
+      score: j.enriched ? j.score : calcSimilarity(j, refSections),
+    }))
+    .sort((a, b) => {
+      // enriched 공고를 상단 고정 후 score 순
+      if (a.enriched && !b.enriched) return -1;
+      if (!a.enriched && b.enriched) return 1;
+      return b.score - a.score;
+    });
+}
+
+// ── 상세 비교 (업무내용 ↔ 업무내용 직접 텍스트 비교) ────────────
+
+/**
+ * 두 텍스트 사이의 키워드 겹침 비율 (Jaccard similarity, 0~1)
+ */
+function textOverlap(textA, textB) {
+  const setA = new Set(tokenize(textA || ''));
+  const setB = new Set(tokenize(textB || ''));
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let overlap = 0;
+  for (const t of setA) if (setB.has(t)) overlap++;
+  const union = new Set([...setA, ...setB]).size;
+  return union > 0 ? overlap / union : 0;
+}
+
+/**
+ * 상세 내용 기반 100점 만점 유사도 — 업무내용끼리 직접 비교
+ *   업무내용(40) + 산업군(30) + 우대사항(15) + 자격요건(10) + 제목(5)
+ *
+ * @param {object} refRaw   - 기준 공고 원본 섹션 { duties, requirements, preferred, industry }
+ * @param {object} jobSections - 스크래핑 공고 파싱 섹션 { duties, requirements, preferred }
+ * @param {string} jobIndustry - 스크래핑 공고의 산업군 (listing에서 가져온 값)
+ * @param {string} jobTitle    - 스크래핑 공고 제목 (보조)
+ * @param {string} refTitle    - 기준 공고 제목 (보조)
+ */
+export function calcSimilarityFull(refRaw, jobSections, jobIndustry, jobTitle = '', refTitle = '') {
+  const { duties: rDuties = '', requirements: rReq = '', preferred: rPref = '', industry: rInd = '' } = refRaw || {};
+  const { duties: jDuties = '', requirements: jReq = '', preferred: jPref = '' } = jobSections || {};
+
+  // 1. 업무내용 직접 비교 (40점)
+  const dutiesScore = textOverlap(rDuties, jDuties) * 40;
+
+  // 2. 산업군 일치 (30점)
+  let industryScore = 0;
+  const rIndLow = rInd.toLowerCase();
+  const jIndLow = (jobIndustry || '').toLowerCase();
+  if (rIndLow && jIndLow) {
+    const slice = rIndLow.slice(0, 4);
+    if (slice.length >= 2 && (jIndLow.includes(slice) || rIndLow.includes(jIndLow.slice(0, 4)))) {
+      industryScore = 30;
+    }
+  }
+
+  // 3. 우대사항 직접 비교 (15점)
+  const preferScore = textOverlap(rPref, jPref) * 15;
+
+  // 4. 자격요건 직접 비교 (10점)
+  const requireScore = textOverlap(rReq, jReq) * 10;
+
+  // 5. 제목 유사도 (5점) — 보조
+  const titleScore = textOverlap(refTitle, jobTitle) * 5;
+
+  return Math.min(100, Math.round(dutiesScore + industryScore + preferScore + requireScore + titleScore));
 }
 
 // ── 하위 호환성 ──────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function RefJobInput({ onSubmit, onClear, refJob, loading, error }) {
+export default function RefJobInput({ onSubmit, onClear, refJob, loading, error, enrichStatus = {} }) {
   const [url, setUrl] = useState('');
 
   const handleSubmit = (e) => {
@@ -33,7 +33,10 @@ export default function RefJobInput({ onSubmit, onClear, refJob, loading, error 
           <span className="ref-job-info">
             <strong>{refJob.title}</strong>
             {refJob.company && <em> · {refJob.company}</em>}
-            <span className="ref-job-mode"> 기준 · 유사도순 정렬</span>
+            {enrichStatus.loading
+              ? <span className="ref-job-mode enrich-loading"> 🔍 상세 분석 중 ({enrichStatus.done}/{enrichStatus.total})</span>
+              : <span className="ref-job-mode"> · 유사도순 정렬</span>
+            }
           </span>
           <button className="btn-ghost ref-job-clear" onClick={() => { onClear(); setUrl(''); }}>✕ 해제</button>
         </div>
