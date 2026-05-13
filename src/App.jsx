@@ -191,7 +191,6 @@ export default function App() {
   };
 
   // 검색 완료 후 상위 30개 상세 페이지 fetch → 업무내용끼리 직접 비교
-  // ※ triggerEnrich를 useEffect보다 먼저 선언해야 참조 오류 없음
   const triggerEnrich = useCallback(async () => {
     const refJob = stateRef.current.refJob;
     if (!refJob?.rawSections) return;
@@ -199,11 +198,13 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
-    const top30 = [...allJobs]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 30);
+    const top30 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 30);
+    if (top30.length === 0) return;
 
-    setEnrichStatus({ loading: true, done: 0, total: top30.length });
+    setEnrichStatus({ loading: true, done: 0, total: top30.length, error: '' });
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90000); // 90초 타임아웃
 
     try {
       const apiBase = import.meta.env.VITE_API_URL || '';
@@ -211,14 +212,18 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobs: top30.map(j => ({ id: j.id, url: j.url })) }),
+        signal: controller.signal,
       });
+
+      if (!response.ok) throw new Error(`서버 오류: ${response.status}`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let doneCount = 0;
+      let streamDone = false;
 
-      while (true) {
+      while (!streamDone) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -227,25 +232,26 @@ export default function App() {
 
         for (const part of parts) {
           if (!part.startsWith('data: ')) continue;
-          const data = JSON.parse(part.slice(6));
-          if (data.type === 'complete') break;
+          let data;
+          try { data = JSON.parse(part.slice(6)); } catch { continue; }
+
+          if (data.type === 'complete') { streamDone = true; break; }
 
           if (data.id && data.sections) {
             const job = jobMap.current.get(data.id);
             if (job) {
-              const fullScore = calcSimilarityFull(
+              const rawScore = calcSimilarityFull(
                 refJob.rawSections, data.sections,
                 job.industry, job.title, refJob.title
               );
-              jobMap.current.set(data.id, { ...job, score: fullScore, enriched: true });
+              jobMap.current.set(data.id, { ...job, _rawScore: rawScore, enriched: true });
             }
           }
 
           doneCount++;
           setEnrichStatus(prev => ({ ...prev, done: doneCount }));
 
-          // 3개마다 화면 업데이트
-          if (doneCount % 3 === 0) {
+          if (doneCount % 5 === 0) {
             const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
             const all = [...jobMap.current.values()];
             const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
@@ -254,15 +260,27 @@ export default function App() {
         }
       }
     } catch (e) {
-      console.error('[enrich]', e.message);
+      const msg = e.name === 'AbortError' ? '분석 시간 초과 (90초)' : e.message;
+      console.error('[enrich]', msg);
+      setEnrichStatus(prev => ({ ...prev, loading: false, error: msg }));
+      return;
+    } finally {
+      clearTimeout(timeout);
     }
 
-    // 최종 정렬
+    // 분석 완료 — 점수 정규화: 상위 점수 기준으로 스케일링
+    const enrichedJobs = [...jobMap.current.values()].filter(j => j.enriched);
+    const maxRaw = Math.max(...enrichedJobs.map(j => j._rawScore ?? 0), 1);
+    for (const job of enrichedJobs) {
+      const normalized = Math.round(((job._rawScore ?? 0) / maxRaw) * 90) + 5; // 5~95점
+      jobMap.current.set(job.id, { ...job, score: normalized });
+    }
+
     const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
     const all = [...jobMap.current.values()];
     const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
     setJobs(sortBySimilarity(filtered, stateRef.current.refJob?.refSections));
-    setEnrichStatus(prev => ({ ...prev, loading: false }));
+    setEnrichStatus(prev => ({ ...prev, loading: false, error: '' }));
   }, [applyAllFilters]);
 
   // 검색 완료 + 유사도 모드일 때 → 상세 비교 자동 시작

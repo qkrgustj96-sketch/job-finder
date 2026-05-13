@@ -35,6 +35,8 @@ export default function RefJobInput({ onSubmit, onClear, refJob, loading, error,
             {refJob.company && <em> · {refJob.company}</em>}
             {enrichStatus.loading
               ? <span className="ref-job-mode enrich-loading"> 🔍 상세 분석 중 ({enrichStatus.done}/{enrichStatus.total})</span>
+              : enrichStatus.error
+              ? <span className="ref-job-mode" style={{color:'#ef4444'}}> ⚠ 상세 분석 실패: {enrichStatus.error}</span>
               : <span className="ref-job-mode"> · 유사도순 정렬</span>
             }
           </span>
