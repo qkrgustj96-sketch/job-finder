@@ -125,7 +125,7 @@ export default function App() {
     setSiteStatus(initialStatus);
     setLoading(true);
 
-    stateRef.current = { excludes, minSalary, kw, locations, empTypes, industries, companyTypes };
+    stateRef.current = { excludes, minSalary, kw, locations, empTypes, industries, companyTypes, refJob: stateRef.current.refJob };
 
     const es = createJobStream(kw, selectedSites, {
       location: locations.join(','), employmentType: empTypes.join(','),
@@ -177,7 +177,15 @@ export default function App() {
 
   useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
 
-  // 기준 공고 URL 처리
+  // 공고 제목에서 검색 키워드 추출 (채용/모집 등 불필요 단어 제거 후 앞 2단어)
+  const deriveSearchKeyword = (title) => {
+    const clean = title
+      .replace(/\s*(채용|모집|구인|공고|포지션|담당자|직원|급구|경력직|신입|정규직)\s*.*$/i, '')
+      .trim();
+    return clean.split(/\s+/).slice(0, 2).join(' ') || title.split(/\s+/)[0];
+  };
+
+  // 기준 공고 URL 처리 → 파싱 후 자동 검색
   const handleRefUrl = useCallback(async (url) => {
     setRefLoading(true);
     setRefError('');
@@ -189,28 +197,39 @@ export default function App() {
 
       const keywords = extractKeywords(data.title, data.text);
       const newRefJob = { title: data.title, company: data.company, keywords };
-      setRefJob(newRefJob);
-      stateRef.current.refJob = newRefJob;
-      setPage(1);
 
-      // 현재 결과 재정렬
-      const { excludes: excl = [], minSalary: sal = '0', kw: k = '', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
-      const all = [...jobMap.current.values()];
-      const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
-      setJobs(sortBySimilarity(filtered, keywords));
+      // refJob을 stateRef에 먼저 세팅 → handleSearch가 보존함
+      stateRef.current.refJob = newRefJob;
+      setRefJob(newRefJob);
+
+      // 파싱된 공고 제목으로 키워드 추출 후 자동 검색
+      const searchKeyword = deriveSearchKeyword(data.title);
+      const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
+      handleSearch({
+        keyword: searchKeyword,
+        excludes: excl,
+        selectedSites: Object.keys(SITE_CONFIGS),
+        locations: locs,
+        empTypes: eTypes,
+        experiences: [],
+        educations: [],
+        companyTypes: cTypes,
+        industries: inds,
+        minSalary: sal,
+      });
     } catch (e) {
       setRefError(e.message);
     } finally {
       setRefLoading(false);
     }
-  }, [applyAllFilters]);
+  }, [handleSearch]);
 
   const clearRefJob = useCallback(() => {
     setRefJob(null);
     stateRef.current.refJob = null;
     setPage(1);
     // 추천순(siteRank 기반)으로 복귀
-    const { excludes: excl = [], minSalary: sal = '0', kw: k = '', locations: locs = [], empTypes: eTypes = [], industries: inds = [] } = stateRef.current;
+    const { excludes: excl = [], minSalary: sal = '0', kw: k = '', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
     const all = [...jobMap.current.values()];
     const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
     setJobs(sortByScore(filtered, k));
