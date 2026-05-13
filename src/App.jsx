@@ -6,7 +6,7 @@ import RefJobInput from './components/RefJobInput.jsx';
 import { SITE_CONFIGS, createJobStream } from './services/jobSites.js';
 import { applyExcludes } from './utils/filter.js';
 import { sortByScore } from './utils/scoring.js';
-import { extractKeywords, sortBySimilarity } from './utils/similarity.js';
+import { extractRefSections, sortBySimilarity } from './utils/similarity.js';
 
 const STORAGE_KEY = 'job_finder_saved';
 const PAGE_SIZE = 100;
@@ -103,8 +103,8 @@ export default function App() {
 
   // 정렬: 기준 공고 있으면 유사도순, 없으면 추천순(siteRank 기반)
   const sortJobs = useCallback((filtered, kw, currentRefJob) => {
-    if (currentRefJob?.keywords?.length > 0) {
-      return sortBySimilarity(filtered, currentRefJob.keywords);
+    if (currentRefJob?.refSections) {
+      return sortBySimilarity(filtered, currentRefJob.refSections);
     }
     return sortByScore(filtered, kw);
   }, []);
@@ -195,8 +195,9 @@ export default function App() {
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || '파싱 실패');
 
-      const keywords = extractKeywords(data.title, data.text);
-      const newRefJob = { title: data.title, company: data.company, keywords };
+      // 섹션별 키워드 추출 (제목·업무내용·산업군·우대사항·자격요건)
+      const refSections = extractRefSections(data);
+      const newRefJob = { title: data.title, company: data.company, refSections };
 
       // refJob을 stateRef에 먼저 세팅 → handleSearch가 보존함
       stateRef.current.refJob = newRefJob;
