@@ -71,20 +71,25 @@ app.post('/api/jobs/enrich', express.json(), async (req, res) => {
   const send = (data) => { if (!closed) res.write(`data: ${JSON.stringify(data)}\n\n`); };
 
   const { jobs = [] } = req.body;
-  const limited = jobs.slice(0, 30); // 최대 30개
+  const limited = jobs.slice(0, 20); // 최대 20개
 
-  const CONCURRENCY = 5;
+  const CONCURRENCY = 3; // 사이트 차단 방지
+  const JOB_TIMEOUT = 6000; // 건당 6초 제한
+
   const queue = [...limited];
+
+  const withTimeout = (promise, ms) =>
+    Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
   const workers = Array.from({ length: CONCURRENCY }, async () => {
     while (queue.length > 0 && !closed) {
       const job = queue.shift();
       if (!job) break;
       try {
-        const detail = await parseJobDetail(job.url);
+        const detail = await withTimeout(parseJobDetail(job.url), JOB_TIMEOUT);
         send({ id: job.id, sections: detail.sections });
       } catch (e) {
-        send({ id: job.id, sections: null });
+        send({ id: job.id, sections: null }); // 실패해도 계속 진행
       }
     }
   });

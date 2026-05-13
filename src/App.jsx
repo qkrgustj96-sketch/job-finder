@@ -63,7 +63,8 @@ export default function App() {
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError]   = useState('');
 
-  const [enrichStatus, setEnrichStatus] = useState({ loading: false, done: 0, total: 0 });
+  const [enrichStatus, setEnrichStatus] = useState({ loading: false, done: 0, total: 0, error: '' });
+  const [analyzingMode, setAnalyzingMode] = useState(false); // URL 분석 중 로딩 화면
 
   const esRef       = useRef(null);
   const jobMap      = useRef(new Map());
@@ -263,6 +264,7 @@ export default function App() {
       const msg = e.name === 'AbortError' ? '분석 시간 초과 (90초)' : e.message;
       console.error('[enrich]', msg);
       setEnrichStatus(prev => ({ ...prev, loading: false, error: msg }));
+      setAnalyzingMode(false);
       return;
     } finally {
       clearTimeout(timeout);
@@ -281,6 +283,7 @@ export default function App() {
     const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
     setJobs(sortBySimilarity(filtered, stateRef.current.refJob?.refSections));
     setEnrichStatus(prev => ({ ...prev, loading: false, error: '' }));
+    setAnalyzingMode(false); // 로딩 화면 종료
   }, [applyAllFilters]);
 
   // 검색 완료 + 유사도 모드일 때 → 상세 비교 자동 시작
@@ -312,6 +315,7 @@ export default function App() {
 
       stateRef.current.refJob = newRefJob;
       setRefJob(newRefJob);
+      setAnalyzingMode(true); // 로딩 화면 시작
 
       const searchKeyword = deriveSearchKeyword(data.title);
       const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
@@ -407,6 +411,34 @@ export default function App() {
           error={refError}
           enrichStatus={enrichStatus}
         />
+
+        {/* 유사 공고 분석 로딩 화면 */}
+        {analyzingMode && refJob && (
+          <div className="analyzing-overlay">
+            <div className="analyzing-card">
+              <div className="analyzing-spinner" />
+              <p className="analyzing-title">유사 공고를 분석하고 있어요</p>
+              <p className="analyzing-ref">📌 {refJob.title} · {refJob.company}</p>
+              <div className="analyzing-steps">
+                <div className={`analyzing-step ${!loading ? 'done' : 'active'}`}>
+                  {loading ? '1단계: 공고 수집 중…' : '1단계: 공고 수집 완료 ✓'}
+                  {loading && Object.keys(siteStatus).length > 0 && (
+                    <span className="analyzing-sub">
+                      {Object.entries(siteStatus).map(([site, { status, count }]) =>
+                        `${SITE_CONFIGS[site]?.name} ${status === 'done' ? `✓${count}개` : status === 'error' ? '✗' : '⟳'}`
+                      ).join('  ')}
+                    </span>
+                  )}
+                </div>
+                <div className={`analyzing-step ${enrichStatus.loading ? 'active' : !loading ? 'waiting' : ''}`}>
+                  {enrichStatus.loading
+                    ? `2단계: 상세 내용 분석 중… (${enrichStatus.done}/${enrichStatus.total})`
+                    : '2단계: 상세 내용 비교 대기 중'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <SavedJobs jobs={savedJobs} onRemove={removeSaved} />
         <JobTable
