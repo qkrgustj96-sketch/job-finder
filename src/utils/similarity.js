@@ -65,7 +65,10 @@ export function extractRefSections(parsedJob) {
 
 /**
  * 100점 만점 유사도 스코어링
- *   제목(40) + 업무내용(30) + 산업군(15) + 우대사항(10) + 자격요건(5)
+ *   업무내용(40) + 산업군(30) + 우대사항(15) + 자격요건(10) + 제목(5)
+ *
+ * 제목은 검색 풀을 모으는 데 이미 활용되었으므로 보조 점수만 부여.
+ * 핵심은 실제로 하는 일(업무내용)과 같은 업계(산업군)의 일치 여부.
  *
  * @param {object} job - 스크래핑된 공고 { title, industry, ... }
  * @param {object} refSections - extractRefSections() 반환값
@@ -75,30 +78,30 @@ export function calcSimilarity(job, refSections) {
 
   const hay = job.title.toLowerCase();
 
-  // 1. 제목 유사도 (40점)
-  const titlePts = matchScore(hay, refSections.titleKeywords) * 40;
+  // 1. 업무내용 키워드가 공고 제목에 포함되는 정도 (40점)
+  const dutiesPts = matchScore(hay, refSections.dutiesKeywords) * 40;
 
-  // 2. 업무내용 키워드가 공고 제목에 포함되는 정도 (30점)
-  const dutiesPts = matchScore(hay, refSections.dutiesKeywords) * 30;
-
-  // 3. 산업군 일치 (15점) — 스크래핑 공고의 industry 필드와 비교
+  // 2. 산업군 일치 (30점) — 스크래핑 공고의 industry 필드와 비교
   let industryPts = 0;
   if (refSections.industry && job.industry) {
     const refInd = refSections.industry.toLowerCase();
     const jobInd = job.industry.toLowerCase();
-    // 앞 3글자 이상 공통 부분이 있으면 동일 산업군으로 판단
     const refSlice = refInd.slice(0, 4);
-    if (refSlice.length >= 2 && jobInd.includes(refSlice)) industryPts = 15;
-    else if (jobInd.slice(0, 4).length >= 2 && refInd.includes(jobInd.slice(0, 4))) industryPts = 15;
+    const jobSlice = jobInd.slice(0, 4);
+    if (refSlice.length >= 2 && jobInd.includes(refSlice)) industryPts = 30;
+    else if (jobSlice.length >= 2 && refInd.includes(jobSlice)) industryPts = 30;
   }
 
-  // 4. 우대사항 키워드 (10점)
-  const preferPts = matchScore(hay, refSections.preferKeywords) * 10;
+  // 3. 우대사항 키워드 (15점)
+  const preferPts = matchScore(hay, refSections.preferKeywords) * 15;
 
-  // 5. 자격요건 키워드 (5점)
-  const requirePts = matchScore(hay, refSections.requireKeywords) * 5;
+  // 4. 자격요건 키워드 (10점)
+  const requirePts = matchScore(hay, refSections.requireKeywords) * 10;
 
-  return Math.min(100, Math.round(titlePts + dutiesPts + industryPts + preferPts + requirePts));
+  // 5. 제목 유사도 (5점) — 보조
+  const titlePts = matchScore(hay, refSections.titleKeywords) * 5;
+
+  return Math.min(100, Math.round(dutiesPts + industryPts + preferPts + requirePts + titlePts));
 }
 
 /**
