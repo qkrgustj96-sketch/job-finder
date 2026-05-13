@@ -68,7 +68,7 @@ const INDUSTRIES = [
 export default function SearchBar({ onSearch, loading }) {
   const [keyword, setKeyword] = useState('');
   const [excludeInput, setExcludeInput] = useState('');
-  const [excludes, setExcludes] = useState(['개발자', '백엔드', '프론트엔드', '디자이너', '고객센터']);
+  const [excludes, setExcludes] = useState([]);
   const [selectedSites, setSelectedSites] = useState(Object.keys(SITE_CONFIGS));
   const [showFilter, setShowFilter] = useState(false);
 
