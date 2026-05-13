@@ -182,16 +182,7 @@ export default function App() {
 
   useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
 
-  // 검색 완료 + 유사도 모드일 때 → 상세 비교 자동 시작
-  const prevLoadingRef = useRef(false);
-  useEffect(() => {
-    if (prevLoadingRef.current && !loading && stateRef.current.refJob?.rawSections) {
-      triggerEnrich();
-    }
-    prevLoadingRef.current = loading;
-  }, [loading, triggerEnrich]);
-
-  // 공고 제목에서 검색 키워드 추출 (채용/모집 등 불필요 단어 제거 후 앞 2단어)
+  // 공고 제목에서 검색 키워드 추출
   const deriveSearchKeyword = (title) => {
     const clean = title
       .replace(/\s*(채용|모집|구인|공고|포지션|담당자|직원|급구|경력직|신입|정규직)\s*.*$/i, '')
@@ -199,52 +190,8 @@ export default function App() {
     return clean.split(/\s+/).slice(0, 2).join(' ') || title.split(/\s+/)[0];
   };
 
-  // 기준 공고 URL 처리 → 파싱 후 자동 검색
-  const handleRefUrl = useCallback(async (url) => {
-    setRefLoading(true);
-    setRefError('');
-    try {
-      const apiBase = import.meta.env.VITE_API_URL || '';
-      const res = await fetch(`${apiBase}/api/job/parse?url=${encodeURIComponent(url)}`);
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || '파싱 실패');
-
-      // 섹션별 키워드 추출 (제목·업무내용·산업군·우대사항·자격요건)
-      const refSections = extractRefSections(data);
-      const newRefJob = {
-        title: data.title,
-        company: data.company,
-        refSections,
-        rawSections: data.sections,  // 상세 비교용 원본 텍스트
-      };
-
-      // refJob을 stateRef에 먼저 세팅 → handleSearch가 보존함
-      stateRef.current.refJob = newRefJob;
-      setRefJob(newRefJob);
-
-      // 파싱된 공고 제목으로 키워드 추출 후 자동 검색
-      const searchKeyword = deriveSearchKeyword(data.title);
-      const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
-      handleSearch({
-        keyword: searchKeyword,
-        excludes: excl,
-        selectedSites: Object.keys(SITE_CONFIGS),
-        locations: locs,
-        empTypes: eTypes,
-        experiences: [],
-        educations: [],
-        companyTypes: cTypes,
-        industries: inds,
-        minSalary: sal,
-      });
-    } catch (e) {
-      setRefError(e.message);
-    } finally {
-      setRefLoading(false);
-    }
-  }, [handleSearch]);
-
   // 검색 완료 후 상위 30개 상세 페이지 fetch → 업무내용끼리 직접 비교
+  // ※ triggerEnrich를 useEffect보다 먼저 선언해야 참조 오류 없음
   const triggerEnrich = useCallback(async () => {
     const refJob = stateRef.current.refJob;
     if (!refJob?.rawSections) return;
@@ -317,6 +264,57 @@ export default function App() {
     setJobs(sortBySimilarity(filtered, stateRef.current.refJob?.refSections));
     setEnrichStatus(prev => ({ ...prev, loading: false }));
   }, [applyAllFilters]);
+
+  // 검색 완료 + 유사도 모드일 때 → 상세 비교 자동 시작
+  const prevLoadingRef = useRef(false);
+  useEffect(() => {
+    if (prevLoadingRef.current && !loading && stateRef.current.refJob?.rawSections) {
+      triggerEnrich();
+    }
+    prevLoadingRef.current = loading;
+  }, [loading, triggerEnrich]);
+
+  // 기준 공고 URL 처리 → 파싱 후 자동 검색
+  const handleRefUrl = useCallback(async (url) => {
+    setRefLoading(true);
+    setRefError('');
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || '';
+      const res = await fetch(`${apiBase}/api/job/parse?url=${encodeURIComponent(url)}`);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || '파싱 실패');
+
+      const refSections = extractRefSections(data);
+      const newRefJob = {
+        title: data.title,
+        company: data.company,
+        refSections,
+        rawSections: data.sections,
+      };
+
+      stateRef.current.refJob = newRefJob;
+      setRefJob(newRefJob);
+
+      const searchKeyword = deriveSearchKeyword(data.title);
+      const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
+      handleSearch({
+        keyword: searchKeyword,
+        excludes: excl,
+        selectedSites: Object.keys(SITE_CONFIGS),
+        locations: locs,
+        empTypes: eTypes,
+        experiences: [],
+        educations: [],
+        companyTypes: cTypes,
+        industries: inds,
+        minSalary: sal,
+      });
+    } catch (e) {
+      setRefError(e.message);
+    } finally {
+      setRefLoading(false);
+    }
+  }, [handleSearch]);
 
   const clearRefJob = useCallback(() => {
     setRefJob(null);
