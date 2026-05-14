@@ -134,52 +134,71 @@ export default function App() {
 
     stateRef.current = { excludes, minSalary, kw, locations, empTypes, industries, companyTypes, refJob: stateRef.current.refJob };
 
-    const es = createJobStream(kw, selectedSites, {
+    const streamParams = {
       location: locations.join(','), employmentType: empTypes.join(','),
       experience: experiences.join(','), education: educations.join(','),
       companyType: companyTypes.join(','), minSalary,
-    });
-    esRef.current = es;
+    };
 
-    es.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      const { excludes: excl, minSalary: sal, kw: k, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes } = stateRef.current;
+    let retryCount = 0;
 
-      if (data.type === 'jobs') {
-        const enriched = data.jobs.map(job => ({
-          ...job,
-          siteName:  SITE_CONFIGS[job.site]?.name  || job.site,
-          siteColor: SITE_CONFIGS[job.site]?.color || '#888',
-        }));
-        enriched.forEach(j => jobMap.current.set(j.id, j));
-        setSiteStatus(prev => ({
-          ...prev,
-          [data.site]: { status: 'loading', count: (prev[data.site]?.count || 0) + data.jobs.length },
-        }));
-        const all = [...jobMap.current.values()];
-        const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
-        setJobs(sortJobs(filtered, k, stateRef.current.refJob));
+    function startStream() {
+      const es = createJobStream(kw, selectedSites, streamParams);
+      esRef.current = es;
 
-      } else if (data.type === 'done') {
-        setSiteStatus(prev => ({ ...prev, [data.site]: { ...prev[data.site], status: 'done' } }));
-      } else if (data.type === 'error') {
-        if (data.site) {
-          setSiteErrors(prev => ({ ...prev, [data.site]: data.message }));
-          setSiteStatus(prev => ({ ...prev, [data.site]: { ...prev[data.site], status: 'error' } }));
+      es.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        const { excludes: excl, minSalary: sal, kw: k, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes } = stateRef.current;
+
+        if (data.type === 'jobs') {
+          const tagged = data.jobs.map(job => ({
+            ...job,
+            siteName:  SITE_CONFIGS[job.site]?.name  || job.site,
+            siteColor: SITE_CONFIGS[job.site]?.color || '#888',
+          }));
+          tagged.forEach(j => jobMap.current.set(j.id, j));
+          setSiteStatus(prev => ({
+            ...prev,
+            [data.site]: { status: 'loading', count: (prev[data.site]?.count || 0) + data.jobs.length },
+          }));
+          const all = [...jobMap.current.values()];
+          const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
+          setJobs(sortJobs(filtered, k, stateRef.current.refJob));
+
+        } else if (data.type === 'done') {
+          setSiteStatus(prev => ({ ...prev, [data.site]: { ...prev[data.site], status: 'done' } }));
+        } else if (data.type === 'error') {
+          if (data.site) {
+            setSiteErrors(prev => ({ ...prev, [data.site]: data.message }));
+            setSiteStatus(prev => ({ ...prev, [data.site]: { ...prev[data.site], status: 'error' } }));
+          }
+        } else if (data.type === 'complete') {
+          setLoading(false);
+          es.close();
+          esRef.current = null;
         }
-      } else if (data.type === 'complete') {
-        setLoading(false);
+      };
+
+      es.onerror = () => {
         es.close();
         esRef.current = null;
-      }
-    };
+        const hasResults = jobMap.current.size > 0;
+        // Railway 콜드스타트 대응: 결과 없으면 최대 2회 자동 재시도
+        if (!hasResults && retryCount < 2) {
+          retryCount++;
+          setSiteErrors(prev => ({ ...prev, _global: `서버 연결 중… (재시도 ${retryCount}/2)` }));
+          setTimeout(startStream, 3000);
+        } else {
+          setLoading(false);
+          if (!hasResults) {
+            setSiteErrors(prev => ({ ...prev, _global: '서버 연결이 불안정합니다. 다시 검색해주세요.' }));
+          }
+          // 결과가 있으면 나머지 사이트만 실패 처리 (에러 표시 없음)
+        }
+      };
+    }
 
-    es.onerror = () => {
-      setLoading(false);
-      setSiteErrors(prev => ({ ...prev, _global: '서버 연결이 불안정합니다. 다시 검색해주세요.' }));
-      es.close();
-      esRef.current = null;
-    };
+    startStream();
   }, [applyAllFilters, sortJobs]);
 
   useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
@@ -201,15 +220,15 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
-    const top20 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 20);
-    if (top20.length === 0) return;
+    const top50 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 50);
+    if (top50.length === 0) return;
 
-    setEnrichStatus({ loading: true, done: 0, total: top20.length, error: '' });
+    setEnrichStatus({ loading: true, done: 0, total: top50.length, error: '' });
 
     const apiBase = import.meta.env.VITE_API_URL || '';
     let doneCount = 0;
-    const CONCURRENCY = 4; // 브라우저 병렬 fetch (사이트별 IP 분산)
-    const queue = [...top20];
+    const CONCURRENCY = 8; // 브라우저 병렬 fetch (Vercel 프록시 활용)
+    const queue = [...top50];
 
     const flushJobs = () => {
       const { excludes: excl = [], minSalary: sal = '0', locations: locs = [],
@@ -237,18 +256,18 @@ export default function App() {
 
         doneCount++;
         setEnrichStatus(prev => ({ ...prev, done: doneCount }));
-        if (doneCount % 4 === 0 || doneCount === top20.length) flushJobs();
+        if (doneCount % 8 === 0 || doneCount === top50.length) flushJobs();
       }
     };
 
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-    // 점수 정규화 (5~95점)
+    // 점수 정규화: 0~100점 (바닥 5점 제거 — 실제 유사도 반영)
     const enrichedJobs = [...jobMap.current.values()].filter(j => j.enriched);
     if (enrichedJobs.length > 0) {
       const maxRaw = Math.max(...enrichedJobs.map(j => j._rawScore ?? 0), 1);
       for (const job of enrichedJobs) {
-        const normalized = Math.round(((job._rawScore ?? 0) / maxRaw) * 90) + 5;
+        const normalized = Math.round(((job._rawScore ?? 0) / maxRaw) * 100);
         jobMap.current.set(job.id, { ...job, score: normalized });
       }
     }
@@ -410,10 +429,8 @@ export default function App() {
               </div>
               <p className="analyzing-pct">{analyzePct}%</p>
               <p className="analyzing-hint">
-                {loading
-                  ? '채용 공고 수집 중…'
-                  : enrichStatus.loading
-                  ? `상세 내용 분석 중 (${enrichStatus.done}/${enrichStatus.total})`
+                {loading ? '채용 공고 수집 중…'
+                  : enrichStatus.loading ? '상세 내용 분석 중…'
                   : '분석 완료'}
               </p>
             </div>

@@ -69,10 +69,11 @@ function matchScore(haystack, keywords) {
   // 구 매칭 우선: 구 1개 = 0.5, 2개 이상 = 1.0
   if (bigramHit >= 2) return 1.0;
   if (bigramHit === 1) return 0.5;
-  // 유니그램만: 2개 이상이어야 의미 있음
+  // 유니그램: 1개도 부분 점수 (제목은 짧아 키워드가 적게 나옴)
   if (unigramHit >= 3) return 0.7;
-  if (unigramHit === 2) return 0.35;
-  return 0;  // 단어 1개만 매칭 = 점수 없음
+  if (unigramHit === 2) return 0.4;
+  if (unigramHit === 1) return 0.15;
+  return 0;
 }
 
 /**
@@ -138,9 +139,13 @@ export function sortBySimilarity(jobs, refSections) {
       score: j.enriched ? j.score : calcSimilarity(j, refSections),
     }))
     .sort((a, b) => {
-      // enriched 공고를 상단 고정 후 score 순
-      if (a.enriched && !b.enriched) return -1;
-      if (!a.enriched && b.enriched) return 1;
+      // 점수 기준 정렬: enriched든 아니든 높은 점수가 위
+      // 단, enriched 점수와 rough 점수는 스케일이 다르므로
+      // enriched 점수 ≥ 20이면 확실히 유사 → 비-enriched 앞으로
+      const aStrong = a.enriched && a.score >= 20;
+      const bStrong = b.enriched && b.score >= 20;
+      if (aStrong && !bStrong) return -1;
+      if (!aStrong && bStrong) return 1;
       return b.score - a.score;
     });
 }
