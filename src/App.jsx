@@ -199,7 +199,17 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
-    const top15 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 15);
+    // 원티드 공고를 우선 선발 (Railway에서 유일하게 상세 분석 가능)
+    // 원티드 상위 15개 + 전체 상위 15개 합집합에서 중복 제거
+    const byScore = [...allJobs].sort((a, b) => b.score - a.score);
+    const wantedTop = byScore.filter(j => j.url?.includes('wanted.co.kr')).slice(0, 15);
+    const overallTop = byScore.slice(0, 15);
+    const seen = new Set();
+    const top15 = [...wantedTop, ...overallTop].filter(j => {
+      if (seen.has(j.id)) return false;
+      seen.add(j.id);
+      return true;
+    }).slice(0, 15);
     if (top15.length === 0) return;
 
     setEnrichStatus({ loading: true, done: 0, total: top15.length, error: '' });
@@ -261,7 +271,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      const msg = e.name === 'AbortError' ? '분석 시간 초과 (90초)' : e.message;
+      const msg = e.name === 'AbortError' ? '분석 시간 초과' : e.message;
       console.error('[enrich]', msg);
       setEnrichStatus(prev => ({ ...prev, loading: false, error: msg }));
       setAnalyzingMode(false);

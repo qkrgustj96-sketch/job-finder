@@ -94,6 +94,14 @@ app.post('/api/jobs/enrich', express.json(), async (req, res) => {
     while (queue.length > 0 && !closed) {
       const job = queue.shift();
       if (!job) break;
+
+      // 원티드만 Railway에서 접근 가능 (API 방식)
+      // 사람인·잡코리아·인크루트는 Railway(해외 IP)를 차단 → hang 발생 → 즉시 skip
+      if (!job.url.includes('wanted.co.kr')) {
+        send({ id: job.id, sections: null });
+        continue;
+      }
+
       // AbortController로 axios 요청 실제 취소 (dangling request 방지)
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), JOB_TIMEOUT);
@@ -101,7 +109,7 @@ app.post('/api/jobs/enrich', express.json(), async (req, res) => {
         const detail = await parseJobDetail(job.url, ctrl.signal);
         send({ id: job.id, sections: detail.sections });
       } catch (e) {
-        send({ id: job.id, sections: null }); // 실패해도 계속 진행
+        send({ id: job.id, sections: null });
       } finally {
         clearTimeout(timer);
       }
