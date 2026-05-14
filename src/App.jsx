@@ -7,6 +7,7 @@ import { SITE_CONFIGS, createJobStream } from './services/jobSites.js';
 import { applyExcludes } from './utils/filter.js';
 import { sortByScore } from './utils/scoring.js';
 import { extractRefSections, sortBySimilarity, calcSimilarityFull } from './utils/similarity.js';
+import { fetchJobSections } from './utils/browserEnrich.js';
 
 const STORAGE_KEY = 'job_finder_saved';
 const PAGE_SIZE = 100;
@@ -191,7 +192,8 @@ export default function App() {
     return clean.split(/\s+/).slice(0, 2).join(' ') || title.split(/\s+/)[0];
   };
 
-  // 검색 완료 후 상위 30개 상세 페이지 fetch → 업무내용끼리 직접 비교
+  // 브라우저에서 직접 공고 상세 페이지 fetch → 업무내용 비교
+  // Railway(미국 IP)가 한국 사이트 차단 → Vercel 프록시(/api/proxy)로 우회
   const triggerEnrich = useCallback(async () => {
     const refJob = stateRef.current.refJob;
     if (!refJob?.rawSections) return;
@@ -199,101 +201,61 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
-    // 원티드 공고를 우선 선발 (Railway에서 유일하게 상세 분석 가능)
-    // 원티드 상위 15개 + 전체 상위 15개 합집합에서 중복 제거
-    const byScore = [...allJobs].sort((a, b) => b.score - a.score);
-    const wantedTop = byScore.filter(j => j.url?.includes('wanted.co.kr')).slice(0, 15);
-    const overallTop = byScore.slice(0, 15);
-    const seen = new Set();
-    const top15 = [...wantedTop, ...overallTop].filter(j => {
-      if (seen.has(j.id)) return false;
-      seen.add(j.id);
-      return true;
-    }).slice(0, 15);
-    if (top15.length === 0) return;
+    const top20 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 20);
+    if (top20.length === 0) return;
 
-    setEnrichStatus({ loading: true, done: 0, total: top15.length, error: '' });
+    setEnrichStatus({ loading: true, done: 0, total: top20.length, error: '' });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000); // 60초 타임아웃
+    const apiBase = import.meta.env.VITE_API_URL || '';
+    let doneCount = 0;
+    const CONCURRENCY = 4; // 브라우저 병렬 fetch (사이트별 IP 분산)
+    const queue = [...top20];
 
-    try {
-      const apiBase = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${apiBase}/api/jobs/enrich`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobs: top15.map(j => ({ id: j.id, url: j.url })) }),
-        signal: controller.signal,
-      });
+    const flushJobs = () => {
+      const { excludes: excl = [], minSalary: sal = '0', locations: locs = [],
+              empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
+      const all = [...jobMap.current.values()];
+      const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
+      setJobs(sortBySimilarity(filtered, refJob.refSections));
+    };
 
-      if (!response.ok) throw new Error(`서버 오류: ${response.status}`);
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let doneCount = 0;
-      let streamDone = false;
-
-      while (!streamDone) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop();
-
-        for (const part of parts) {
-          if (!part.startsWith('data: ')) continue;
-          let data;
-          try { data = JSON.parse(part.slice(6)); } catch { continue; }
-
-          if (data.type === 'complete') { streamDone = true; break; }
-
-          if (data.id && data.sections) {
-            const job = jobMap.current.get(data.id);
-            if (job) {
-              const rawScore = calcSimilarityFull(
-                refJob.rawSections, data.sections,
-                job.industry, job.title, refJob.title
-              );
-              jobMap.current.set(data.id, { ...job, _rawScore: rawScore, enriched: true });
-            }
+    const worker = async () => {
+      while (queue.length > 0) {
+        const job = queue.shift();
+        if (!job) break;
+        try {
+          const sections = await fetchJobSections(job, apiBase);
+          if (sections) {
+            const rawScore = calcSimilarityFull(
+              refJob.rawSections, sections,
+              job.industry, job.title, refJob.title
+            );
+            const cur = jobMap.current.get(job.id);
+            if (cur) jobMap.current.set(job.id, { ...cur, _rawScore: rawScore, enriched: true });
           }
+        } catch { /* 개별 실패는 무시 */ }
 
-          doneCount++;
-          setEnrichStatus(prev => ({ ...prev, done: doneCount }));
-
-          if (doneCount % 5 === 0) {
-            const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
-            const all = [...jobMap.current.values()];
-            const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
-            setJobs(sortBySimilarity(filtered, refJob.refSections));
-          }
-        }
+        doneCount++;
+        setEnrichStatus(prev => ({ ...prev, done: doneCount }));
+        if (doneCount % 4 === 0 || doneCount === top20.length) flushJobs();
       }
-    } catch (e) {
-      const msg = e.name === 'AbortError' ? '분석 시간 초과' : e.message;
-      console.error('[enrich]', msg);
-      setEnrichStatus(prev => ({ ...prev, loading: false, error: msg }));
-      setAnalyzingMode(false);
-      return;
-    } finally {
-      clearTimeout(timeout);
-    }
+    };
 
-    // 분석 완료 — 점수 정규화: 상위 점수 기준으로 스케일링
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    // 점수 정규화 (5~95점)
     const enrichedJobs = [...jobMap.current.values()].filter(j => j.enriched);
-    const maxRaw = Math.max(...enrichedJobs.map(j => j._rawScore ?? 0), 1);
-    for (const job of enrichedJobs) {
-      const normalized = Math.round(((job._rawScore ?? 0) / maxRaw) * 90) + 5; // 5~95점
-      jobMap.current.set(job.id, { ...job, score: normalized });
+    if (enrichedJobs.length > 0) {
+      const maxRaw = Math.max(...enrichedJobs.map(j => j._rawScore ?? 0), 1);
+      for (const job of enrichedJobs) {
+        const normalized = Math.round(((job._rawScore ?? 0) / maxRaw) * 90) + 5;
+        jobMap.current.set(job.id, { ...job, score: normalized });
+      }
     }
 
-    const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
-    const all = [...jobMap.current.values()];
-    const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
-    setJobs(sortBySimilarity(filtered, stateRef.current.refJob?.refSections));
+    flushJobs();
     setEnrichStatus(prev => ({ ...prev, loading: false, error: '' }));
-    setAnalyzingMode(false); // 로딩 화면 종료
+    setAnalyzingMode(false);
   }, [applyAllFilters]);
 
   // 검색 완료 + 유사도 모드일 때 → 상세 비교 자동 시작
