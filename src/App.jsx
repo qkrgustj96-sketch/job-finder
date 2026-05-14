@@ -6,7 +6,7 @@ import RefJobInput from './components/RefJobInput.jsx';
 import { SITE_CONFIGS, createJobStream } from './services/jobSites.js';
 import { applyExcludes } from './utils/filter.js';
 import { sortByScore } from './utils/scoring.js';
-import { extractRefSections, sortBySimilarity, calcSimilarityFull } from './utils/similarity.js';
+import { extractRefSections, sortBySimilarity, calcSimilarityFull, extractSecondaryKeywords } from './utils/similarity.js';
 import { fetchJobSections } from './utils/browserEnrich.js';
 
 const STORAGE_KEY = 'job_finder_saved';
@@ -67,10 +67,13 @@ export default function App() {
   const [enrichStatus, setEnrichStatus] = useState({ loading: false, done: 0, total: 0, error: '' });
   const [analyzingMode, setAnalyzingMode] = useState(false); // URL 분석 중 로딩 화면
 
-  const esRef       = useRef(null);
-  const jobMap      = useRef(new Map());
-  const stateRef    = useRef({});
-  const enrichedRef = useRef(false); // 현재 검색에서 enrich 실행 여부
+  const esRef              = useRef(null);
+  const jobMap             = useRef(new Map());
+  const stateRef           = useRef({});
+  const enrichedRef        = useRef(false); // 현재 검색에서 enrich 실행 여부
+  const secondaryKwsRef    = useRef([]);    // 2차 검색 키워드
+  const secondaryDoneRef   = useRef(0);     // 완료된 2차 검색 수
+  const [secondarySearching, setSecondarySearching] = useState(false);
 
   const savedIds = new Set(savedJobs.map(j => j.id));
 
@@ -127,6 +130,9 @@ export default function App() {
     setPage(1);
     jobMap.current.clear();
     enrichedRef.current = false;
+    secondaryKwsRef.current = [];
+    secondaryDoneRef.current = 0;
+    setSecondarySearching(false);
 
     const initialStatus = Object.fromEntries(selectedSites.map(s => [s, { status: 'loading', count: 0 }]));
     setSiteStatus(initialStatus);
@@ -211,6 +217,78 @@ export default function App() {
     return clean.split(/\s+/).slice(0, 2).join(' ') || title.split(/\s+/)[0];
   };
 
+  // 2차 검색 실행 후 enrich 트리거
+  // - 1차 검색(제목 기반) 완료 후 호출
+  // - 기준 공고 duties 키워드로 추가 검색 → jobMap에 신규 공고 병합
+  // - 모든 2차 검색 완료 시 triggerEnrich 호출
+  const runSecondaryThenEnrich = useCallback(() => {
+    const keywords = secondaryKwsRef.current;
+    if (!keywords || keywords.length === 0) {
+      triggerEnrichRef.current?.();
+      return;
+    }
+
+    setSecondarySearching(true);
+    secondaryDoneRef.current = 0;
+    const total = keywords.length;
+
+    const handleOneDone = () => {
+      secondaryDoneRef.current++;
+      if (secondaryDoneRef.current >= total) {
+        setSecondarySearching(false);
+        triggerEnrichRef.current?.();
+      }
+    };
+
+    const { locations: locs = [], empTypes: eTypes = [] } = stateRef.current;
+    const selectedSites = Object.keys(SITE_CONFIGS);
+    const streamParams = {
+      location: locs.join(','), employmentType: eTypes.join(','),
+      experience: '', education: '', companyType: '', minSalary: '0',
+    };
+
+    for (const kw of keywords) {
+      const es = createJobStream(kw, selectedSites, streamParams);
+      // 20초 타임아웃 (2차 검색은 빠르게)
+      const timer = setTimeout(() => { es.close(); handleOneDone(); }, 20000);
+
+      es.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'jobs') {
+          const { excludes: excl = [], minSalary: sal = '0', kw: k = '',
+                  locations: l = [], empTypes: et = [], industries: ind = [], companyTypes: ct = [] } = stateRef.current;
+          const newJobs = data.jobs
+            .filter(j => !jobMap.current.has(j.id)) // 중복 제거
+            .map(j => ({
+              ...j,
+              siteName:  SITE_CONFIGS[j.site]?.name  || j.site,
+              siteColor: SITE_CONFIGS[j.site]?.color || '#888',
+              _fromSecondary: true,
+            }));
+          if (newJobs.length > 0) {
+            newJobs.forEach(j => jobMap.current.set(j.id, j));
+            const all = [...jobMap.current.values()];
+            const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: l, empTypes: et, industries: ind, companyTypes: ct });
+            setJobs(sortJobs(filtered, k, stateRef.current.refJob));
+          }
+        } else if (data.type === 'complete') {
+          clearTimeout(timer);
+          es.close();
+          handleOneDone();
+        }
+      };
+
+      es.onerror = () => {
+        clearTimeout(timer);
+        es.close();
+        handleOneDone();
+      };
+    }
+  }, [applyAllFilters, sortJobs]);
+
+  // triggerEnrich를 ref로 보관 (runSecondaryThenEnrich에서 호출)
+  const triggerEnrichRef = useRef(null);
+
   // 브라우저에서 직접 공고 상세 페이지 fetch → 업무내용 비교
   // Railway(미국 IP)가 한국 사이트 차단 → Vercel 프록시(/api/proxy)로 우회
   const triggerEnrich = useCallback(async () => {
@@ -220,7 +298,7 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
-    const top50 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 50);
+    const top50 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 70); // 2차 검색 포함 → top70
     if (top50.length === 0) return;
 
     setEnrichStatus({ loading: true, done: 0, total: top50.length, error: '' });
@@ -277,14 +355,17 @@ export default function App() {
     setAnalyzingMode(false);
   }, [applyAllFilters]);
 
-  // 검색 완료 + 유사도 모드일 때 → 상세 비교 자동 시작
+  // triggerEnrich ref 동기화 (runSecondaryThenEnrich에서 최신 버전 호출)
+  useEffect(() => { triggerEnrichRef.current = triggerEnrich; }, [triggerEnrich]);
+
+  // 검색 완료 + 유사도 모드일 때 → 2차 검색 후 상세 비교
   const prevLoadingRef = useRef(false);
   useEffect(() => {
     if (prevLoadingRef.current && !loading && stateRef.current.refJob?.rawSections) {
-      triggerEnrich();
+      runSecondaryThenEnrich();
     }
     prevLoadingRef.current = loading;
-  }, [loading, triggerEnrich]);
+  }, [loading, runSecondaryThenEnrich]);
 
   // 기준 공고 URL 처리 → 파싱 후 자동 검색
   const handleRefUrl = useCallback(async (url) => {
@@ -309,6 +390,11 @@ export default function App() {
       setAnalyzingMode(true); // 로딩 화면 시작
 
       const searchKeyword = deriveSearchKeyword(data.title);
+
+      // 2차 검색 키워드: 기준 공고 duties에서 1차 키워드에 없는 특화어 추출
+      const secKws = extractSecondaryKeywords(data.sections, searchKeyword);
+      secondaryKwsRef.current = secKws;
+      console.log('[2차 검색 키워드]', secKws);
       const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
       handleSearch({
         keyword: searchKeyword,
@@ -360,14 +446,17 @@ export default function App() {
   const pagedJobs  = jobs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   // 분석 진행률 계산 (0–100)
+  // 0~35%: 1차 공고 수집, 35~45%: 2차 키워드 검색, 45~95%: 상세 분석, 95~100%: 완료
   let analyzePct = 5;
   if (analyzingMode) {
     if (loading) {
       const totalSites = Math.max(Object.keys(siteStatus).length, 1);
       const doneSites  = Object.values(siteStatus).filter(s => s.status !== 'loading').length;
-      analyzePct = Math.max(5, Math.round((doneSites / totalSites) * 40));
+      analyzePct = Math.max(5, Math.round((doneSites / totalSites) * 35));
+    } else if (secondarySearching) {
+      analyzePct = 38; // 2차 검색 중 고정
     } else if (enrichStatus.loading) {
-      analyzePct = 40 + Math.round((enrichStatus.done / Math.max(enrichStatus.total, 1)) * 55);
+      analyzePct = 45 + Math.round((enrichStatus.done / Math.max(enrichStatus.total, 1)) * 50);
     } else {
       analyzePct = 100;
     }
@@ -429,7 +518,8 @@ export default function App() {
               </div>
               <p className="analyzing-pct">{analyzePct}%</p>
               <p className="analyzing-hint">
-                {loading ? '채용 공고 수집 중…'
+                {loading            ? '채용 공고 수집 중…'
+                  : secondarySearching ? '연관 공고 추가 탐색 중…'
                   : enrichStatus.loading ? '상세 내용 분석 중…'
                   : '분석 완료'}
               </p>
