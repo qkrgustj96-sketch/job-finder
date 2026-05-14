@@ -10,12 +10,21 @@ async function fetchPage(keyword, filters, page) {
   const { data } = await axios.get('https://www.jobkorea.co.kr/Search/', {
     params: { stext: keyword, tabType: 'recruit', Page_No: page },
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36',
-      Accept: 'text/html,application/xhtml+xml',
-      'Accept-Language': 'ko-KR,ko;q=0.9',
-      Referer: 'https://www.jobkorea.co.kr',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      Referer: 'https://www.jobkorea.co.kr/',
+      'Cache-Control': 'no-cache',
+      'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"macOS"',
+      'sec-fetch-dest': 'document',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-site': 'same-origin',
+      'Upgrade-Insecure-Requests': '1',
     },
-    timeout: 12000,
+    timeout: 8000,
   });
 
   const $ = cheerio.load(data);

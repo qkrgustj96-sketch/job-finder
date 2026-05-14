@@ -176,7 +176,7 @@ export default function App() {
 
     es.onerror = () => {
       setLoading(false);
-      setSiteErrors(prev => ({ ...prev, _global: '서버 연결 오류. node server/index.js가 실행 중인지 확인하세요.' }));
+      setSiteErrors(prev => ({ ...prev, _global: '서버 연결이 불안정합니다. 다시 검색해주세요.' }));
       es.close();
       esRef.current = null;
     };
