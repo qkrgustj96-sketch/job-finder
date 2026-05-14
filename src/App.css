@@ -853,51 +853,35 @@ body {
   white-space: nowrap;
 }
 
-.analyzing-steps {
+.analyzing-progress-wrap {
   width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  height: 10px;
+  background: #e2e8f0;
+  border-radius: 99px;
+  overflow: hidden;
   margin-top: 4px;
 }
 
-.analyzing-step {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #94a3b8;
-  background: #f8fafc;
-  border: 1.5px solid #f1f5f9;
-  transition: all 0.2s;
-  text-align: left;
+.analyzing-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #6366f1);
+  border-radius: 99px;
+  transition: width 0.5s ease;
+  min-width: 8px;
 }
 
-.analyzing-step.active {
+.analyzing-pct {
+  font-size: 22px;
+  font-weight: 700;
   color: #1e40af;
-  background: #eff6ff;
-  border-color: #bfdbfe;
+  letter-spacing: -0.5px;
+  margin: 0;
 }
 
-.analyzing-step.done {
-  color: #166534;
-  background: #f0fdf4;
-  border-color: #bbf7d0;
-}
-
-.analyzing-step.waiting {
-  color: #94a3b8;
-}
-
-.analyzing-sub {
-  font-size: 11px;
-  font-weight: 400;
-  color: #60a5fa;
-  letter-spacing: 0.1px;
+.analyzing-hint {
+  font-size: 13px;
+  color: #64748b;
+  margin: 0;
 }
 
 @media (max-width: 768px) {

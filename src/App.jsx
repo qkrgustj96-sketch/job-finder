@@ -199,20 +199,20 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
-    const top30 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 30);
-    if (top30.length === 0) return;
+    const top15 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 15);
+    if (top15.length === 0) return;
 
-    setEnrichStatus({ loading: true, done: 0, total: top30.length, error: '' });
+    setEnrichStatus({ loading: true, done: 0, total: top15.length, error: '' });
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000); // 90초 타임아웃
+    const timeout = setTimeout(() => controller.abort(), 60000); // 60초 타임아웃
 
     try {
       const apiBase = import.meta.env.VITE_API_URL || '';
       const response = await fetch(`${apiBase}/api/jobs/enrich`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobs: top30.map(j => ({ id: j.id, url: j.url })) }),
+        body: JSON.stringify({ jobs: top15.map(j => ({ id: j.id, url: j.url })) }),
         signal: controller.signal,
       });
 
@@ -368,6 +368,20 @@ export default function App() {
   const totalPages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
   const pagedJobs  = jobs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
+  // 분석 진행률 계산 (0–100)
+  let analyzePct = 5;
+  if (analyzingMode) {
+    if (loading) {
+      const totalSites = Math.max(Object.keys(siteStatus).length, 1);
+      const doneSites  = Object.values(siteStatus).filter(s => s.status !== 'loading').length;
+      analyzePct = Math.max(5, Math.round((doneSites / totalSites) * 40));
+    } else if (enrichStatus.loading) {
+      analyzePct = 40 + Math.round((enrichStatus.done / Math.max(enrichStatus.total, 1)) * 55);
+    } else {
+      analyzePct = 100;
+    }
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -418,24 +432,18 @@ export default function App() {
             <div className="analyzing-card">
               <div className="analyzing-spinner" />
               <p className="analyzing-title">유사 공고를 분석하고 있어요</p>
-              <p className="analyzing-ref">📌 {refJob.title} · {refJob.company}</p>
-              <div className="analyzing-steps">
-                <div className={`analyzing-step ${!loading ? 'done' : 'active'}`}>
-                  {loading ? '1단계: 공고 수집 중…' : '1단계: 공고 수집 완료 ✓'}
-                  {loading && Object.keys(siteStatus).length > 0 && (
-                    <span className="analyzing-sub">
-                      {Object.entries(siteStatus).map(([site, { status, count }]) =>
-                        `${SITE_CONFIGS[site]?.name} ${status === 'done' ? `✓${count}개` : status === 'error' ? '✗' : '⟳'}`
-                      ).join('  ')}
-                    </span>
-                  )}
-                </div>
-                <div className={`analyzing-step ${enrichStatus.loading ? 'active' : !loading ? 'waiting' : ''}`}>
-                  {enrichStatus.loading
-                    ? `2단계: 상세 내용 분석 중… (${enrichStatus.done}/${enrichStatus.total})`
-                    : '2단계: 상세 내용 비교 대기 중'}
-                </div>
+              <p className="analyzing-ref">📌 {refJob.title}{refJob.company ? ` · ${refJob.company}` : ''}</p>
+              <div className="analyzing-progress-wrap">
+                <div className="analyzing-progress-bar" style={{ width: `${analyzePct}%` }} />
               </div>
+              <p className="analyzing-pct">{analyzePct}%</p>
+              <p className="analyzing-hint">
+                {loading
+                  ? '채용 공고 수집 중…'
+                  : enrichStatus.loading
+                  ? `상세 내용 분석 중 (${enrichStatus.done}/${enrichStatus.total})`
+                  : '분석 완료'}
+              </p>
             </div>
           </div>
         )}

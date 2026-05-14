@@ -16,7 +16,6 @@ function detectSite(url) {
 
 /**
  * 전문 텍스트에서 섹션(담당업무/자격요건/우대사항) 추출
- * 줄 단위로 섹션 헤더를 찾아 분류
  */
 function extractSections(text) {
   const DUTY_RE  = /담당\s*업무|주요\s*업무|업무\s*내용|하는\s*일|직무\s*내용|주요\s*직무/;
@@ -44,17 +43,18 @@ function extractSections(text) {
     duties:       collected.duties.slice(0, 20).join(' ').slice(0, 1000),
     requirements: collected.requirements.slice(0, 15).join(' ').slice(0, 600),
     preferred:    collected.preferred.slice(0, 15).join(' ').slice(0, 600),
-    industry:     '',   // 텍스트 파싱으로는 추출 어려움 (Wanted API에서만 제공)
+    industry:     '',
   };
 }
 
 // ── 원티드 ───────────────────────────────────────────────────
-async function parseWanted(url) {
+async function parseWanted(url, signal) {
   const idMatch = url.match(/\/wd\/(\d+)/);
   if (!idMatch) throw new Error('원티드 URL 형식이 맞지 않습니다 (/wd/숫자)');
   const { data } = await axios.get(`https://www.wanted.co.kr/api/v4/jobs/${idMatch[1]}`, {
     headers: { ...HEADERS, Accept: 'application/json', 'Wanted-User-Country': 'KR', Referer: 'https://www.wanted.co.kr/' },
-    timeout: 10000,
+    timeout: 5000,
+    signal,
   });
   const j = data.job;
   const duties       = j.detail?.main_tasks        || '';
@@ -71,8 +71,12 @@ async function parseWanted(url) {
 }
 
 // ── 사람인 ───────────────────────────────────────────────────
-async function parseSaramin(url) {
-  const { data } = await axios.get(url, { headers: { ...HEADERS, Referer: 'https://www.saramin.co.kr' }, timeout: 12000 });
+async function parseSaramin(url, signal) {
+  const { data } = await axios.get(url, {
+    headers: { ...HEADERS, Referer: 'https://www.saramin.co.kr' },
+    timeout: 5000,
+    signal,
+  });
   const $ = cheerio.load(data);
   const title   = $('.tit_job, .job_tit h1, h1.tit').first().text().trim();
   const company = $('.name, .corp_name h1').first().text().trim();
@@ -86,8 +90,12 @@ async function parseSaramin(url) {
 }
 
 // ── 잡코리아 ─────────────────────────────────────────────────
-async function parseJobkorea(url) {
-  const { data } = await axios.get(url, { headers: { ...HEADERS, Referer: 'https://www.jobkorea.co.kr' }, timeout: 12000 });
+async function parseJobkorea(url, signal) {
+  const { data } = await axios.get(url, {
+    headers: { ...HEADERS, Referer: 'https://www.jobkorea.co.kr' },
+    timeout: 5000,
+    signal,
+  });
   const $ = cheerio.load(data);
   const title   = $('h1.title, .recruit-title h1, .job-title').first().text().trim();
   const company = $('.company-name, .corp-name').first().text().trim();
@@ -97,8 +105,12 @@ async function parseJobkorea(url) {
 }
 
 // ── 인크루트 ─────────────────────────────────────────────────
-async function parseIncruit(url) {
-  const { data } = await axios.get(url, { headers: { ...HEADERS, Referer: 'https://incruit.com' }, timeout: 12000 });
+async function parseIncruit(url, signal) {
+  const { data } = await axios.get(url, {
+    headers: { ...HEADERS, Referer: 'https://incruit.com' },
+    timeout: 5000,
+    signal,
+  });
   const $ = cheerio.load(data);
   const title   = $('h1, .job_title, .tit_job').first().text().trim();
   const company = $('.company, .corp_name').first().text().trim();
@@ -108,8 +120,12 @@ async function parseIncruit(url) {
 }
 
 // ── 범용 ─────────────────────────────────────────────────────
-async function parseGeneric(url) {
-  const { data } = await axios.get(url, { headers: HEADERS, timeout: 12000 });
+async function parseGeneric(url, signal) {
+  const { data } = await axios.get(url, {
+    headers: HEADERS,
+    timeout: 5000,
+    signal,
+  });
   const $ = cheerio.load(data);
   $('script, style, nav, footer, header').remove();
   const title = $('h1').first().text().trim() || $('title').text().trim();
@@ -119,14 +135,14 @@ async function parseGeneric(url) {
 }
 
 // ── 공통 진입점 ───────────────────────────────────────────────
-export async function parseJobDetail(url) {
+export async function parseJobDetail(url, signal) {
   const site = detectSite(url);
   let result;
-  if      (site === 'wanted')   result = await parseWanted(url);
-  else if (site === 'saramin')  result = await parseSaramin(url);
-  else if (site === 'jobkorea') result = await parseJobkorea(url);
-  else if (site === 'incruit')  result = await parseIncruit(url);
-  else                          result = await parseGeneric(url);
+  if      (site === 'wanted')   result = await parseWanted(url, signal);
+  else if (site === 'saramin')  result = await parseSaramin(url, signal);
+  else if (site === 'jobkorea') result = await parseJobkorea(url, signal);
+  else if (site === 'incruit')  result = await parseIncruit(url, signal);
+  else                          result = await parseGeneric(url, signal);
 
   return { ...result, site };
 }

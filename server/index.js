@@ -66,35 +66,50 @@ app.post('/api/jobs/enrich', express.json(), async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
+  // TCP Nagle 끄기 — Railway 프록시 버퍼링 방지
+  if (req.socket) req.socket.setNoDelay(true);
+
   let closed = false;
   req.on('close', () => { closed = true; });
-  const send = (data) => { if (!closed) res.write(`data: ${JSON.stringify(data)}\n\n`); };
+  const send = (data) => {
+    if (!closed) {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
+  };
 
   const { jobs = [] } = req.body;
-  const limited = jobs.slice(0, 20); // 최대 20개
+  const limited = jobs.slice(0, 15); // 최대 15개
 
   const CONCURRENCY = 3; // 사이트 차단 방지
-  const JOB_TIMEOUT = 6000; // 건당 6초 제한
+  const JOB_TIMEOUT = 7000; // 건당 7초 (axios 5초 + 여유 2초)
 
   const queue = [...limited];
 
-  const withTimeout = (promise, ms) =>
-    Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+  // heartbeat — 프록시가 버퍼 flush하도록 3초마다 SSE 주석 전송
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(': ping\n\n');
+  }, 3000);
 
   const workers = Array.from({ length: CONCURRENCY }, async () => {
     while (queue.length > 0 && !closed) {
       const job = queue.shift();
       if (!job) break;
+      // AbortController로 axios 요청 실제 취소 (dangling request 방지)
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), JOB_TIMEOUT);
       try {
-        const detail = await withTimeout(parseJobDetail(job.url), JOB_TIMEOUT);
+        const detail = await parseJobDetail(job.url, ctrl.signal);
         send({ id: job.id, sections: detail.sections });
       } catch (e) {
         send({ id: job.id, sections: null }); // 실패해도 계속 진행
+      } finally {
+        clearTimeout(timer);
       }
     }
   });
 
   await Promise.all(workers);
+  clearInterval(heartbeat);
   if (!closed) { send({ type: 'complete' }); res.end(); }
 });
 
