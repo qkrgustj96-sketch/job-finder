@@ -6,7 +6,7 @@ import RefJobInput from './components/RefJobInput.jsx';
 import { SITE_CONFIGS, createJobStream } from './services/jobSites.js';
 import { applyExcludes } from './utils/filter.js';
 import { sortByScore } from './utils/scoring.js';
-import { extractRefSections, sortBySimilarity, calcSimilarityFull, extractSecondaryKeywords } from './utils/similarity.js';
+import { extractRefSections, sortBySimilarity, calcSimilarity, calcSimilarityFull, extractSecondaryKeywords } from './utils/similarity.js';
 import { fetchJobSections } from './utils/browserEnrich.js';
 import { scrapeJobkoreaBrowser } from './utils/jobkoreaBrowser.js';
 
@@ -112,9 +112,12 @@ export default function App() {
   }, []);
 
   // 정렬: 기준 공고 있으면 유사도순, 없으면 추천순(siteRank 기반)
+  // 기준 공고 모드: 제목 유사도 0인 완전 무관 공고는 표시 자체를 안 함
   const sortJobs = useCallback((filtered, kw, currentRefJob) => {
     if (currentRefJob?.refSections) {
-      return sortBySimilarity(filtered, currentRefJob.refSections);
+      const sorted = sortBySimilarity(filtered, currentRefJob.refSections);
+      // 제목 기반 rough score가 0인 공고 = 기준 공고와 직무 자체가 무관 → 제외
+      return sorted.filter(j => j.score > 0);
     }
     return sortByScore(filtered, kw);
   }, []);
@@ -338,11 +341,18 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
+    const refSections = refJob.refSections;
 
-    // 사이트별 균등 선발 — 원티드 편향 방지
-    // 각 사이트에서 rough score 상위 20개씩 뽑아 합산 → 최대 80개
+    // 1단계: 제목 유사도 스코어링 → 0점 공고(완전 무관 직군) 제외
+    // "로봇 엔지니어", "하드웨어 개발자" 등이 상세 분석 대상에 포함되는 것 방지
+    const titleScored = allJobs.map(j => ({
+      ...j,
+      _roughScore: j.enriched ? j.score : calcSimilarity(j, refSections),
+    })).filter(j => j._roughScore > 0); // 제목 매칭 없는 공고 완전 제외
+
+    // 2단계: 사이트별 균등 선발 — 원티드 편향 방지 (사이트당 최대 20개)
     const PER_SITE = 20;
-    const sorted = [...allJobs].sort((a, b) => b.score - a.score);
+    const sorted = [...titleScored].sort((a, b) => b._roughScore - a._roughScore);
     const countBySite = {};
     const top50 = sorted.filter(j => {
       countBySite[j.site] = (countBySite[j.site] || 0) + 1;
@@ -448,10 +458,9 @@ export default function App() {
 
       const searchKeyword = deriveSearchKeyword(data.title);
 
-      // 2차 검색 키워드: 기준 공고 duties에서 1차 키워드에 없는 특화어 추출
-      const secKws = extractSecondaryKeywords(data.sections, searchKeyword);
-      secondaryKwsRef.current = secKws;
-      console.log('[2차 검색 키워드]', secKws);
+      // 2차 검색 비활성화: duties 키워드가 너무 범용적이라 무관 직군 공고를 끌어오는 문제
+      // (개발, 기술, 솔루션 등으로 검색 → 하드웨어 엔지니어, 백엔드 개발자 유입)
+      secondaryKwsRef.current = [];
       const { excludes: excl = [], minSalary: sal = '0', locations: locs = [], empTypes: eTypes = [], industries: inds = [], companyTypes: cTypes = [] } = stateRef.current;
       handleSearch({
         keyword: searchKeyword,
