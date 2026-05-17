@@ -221,10 +221,10 @@ export default function App() {
   // - 1차 검색(제목 기반) 완료 후 호출
   // - 기준 공고 duties 키워드로 추가 검색 → jobMap에 신규 공고 병합
   // - 모든 2차 검색 완료 시 triggerEnrich 호출
-  const runSecondaryThenEnrich = useCallback(() => {
+  const runSecondaryThenEnrich = useCallback((doEnrich) => {
     const keywords = secondaryKwsRef.current;
     if (!keywords || keywords.length === 0) {
-      triggerEnrichRef.current?.();
+      doEnrich();
       return;
     }
 
@@ -236,7 +236,7 @@ export default function App() {
       secondaryDoneRef.current++;
       if (secondaryDoneRef.current >= total) {
         setSecondarySearching(false);
-        triggerEnrichRef.current?.();
+        doEnrich();
       }
     };
 
@@ -286,20 +286,18 @@ export default function App() {
     }
   }, [applyAllFilters, sortJobs]);
 
-  // triggerEnrich를 ref로 보관 (runSecondaryThenEnrich에서 호출)
-  const triggerEnrichRef = useRef(null);
-
   // 브라우저에서 직접 공고 상세 페이지 fetch → 업무내용 비교
   // Railway(미국 IP)가 한국 사이트 차단 → Vercel 프록시(/api/proxy)로 우회
   const triggerEnrich = useCallback(async () => {
     const refJob = stateRef.current.refJob;
-    if (!refJob?.rawSections) return;
-    if (enrichedRef.current) return;
+    // 조기 리턴 시에도 반드시 오버레이 닫기
+    if (!refJob?.rawSections) { setAnalyzingMode(false); return; }
+    if (enrichedRef.current)  { setAnalyzingMode(false); return; }
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
     const top50 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 70); // 2차 검색 포함 → top70
-    if (top50.length === 0) return;
+    if (top50.length === 0) { setAnalyzingMode(false); return; }
 
     setEnrichStatus({ loading: true, done: 0, total: top50.length, error: '' });
 
@@ -355,17 +353,24 @@ export default function App() {
     setAnalyzingMode(false);
   }, [applyAllFilters]);
 
-  // triggerEnrich ref 동기화 (runSecondaryThenEnrich에서 최신 버전 호출)
-  useEffect(() => { triggerEnrichRef.current = triggerEnrich; }, [triggerEnrich]);
-
   // 검색 완료 + 유사도 모드일 때 → 2차 검색 후 상세 비교
   const prevLoadingRef = useRef(false);
   useEffect(() => {
     if (prevLoadingRef.current && !loading && stateRef.current.refJob?.rawSections) {
-      runSecondaryThenEnrich();
+      // triggerEnrich를 콜백으로 직접 전달 (ref 통해 잃어버리는 문제 방지)
+      runSecondaryThenEnrich(triggerEnrich);
     }
     prevLoadingRef.current = loading;
-  }, [loading, runSecondaryThenEnrich]);
+  }, [loading, runSecondaryThenEnrich, triggerEnrich]);
+
+  // 안전망: 모든 단계 완료 후에도 오버레이가 남아있으면 강제 종료
+  useEffect(() => {
+    if (!analyzingMode) return;
+    if (loading || secondarySearching || enrichStatus.loading) return;
+    // 100% 상태에서 1초 후에도 안 닫히면 강제 닫기
+    const t = setTimeout(() => setAnalyzingMode(false), 1000);
+    return () => clearTimeout(t);
+  }, [analyzingMode, loading, secondarySearching, enrichStatus.loading]);
 
   // 기준 공고 URL 처리 → 파싱 후 자동 검색
   const handleRefUrl = useCallback(async (url) => {
