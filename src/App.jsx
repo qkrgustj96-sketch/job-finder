@@ -338,7 +338,17 @@ export default function App() {
     enrichedRef.current = true;
 
     const allJobs = [...jobMap.current.values()];
-    const top50 = [...allJobs].sort((a, b) => b.score - a.score).slice(0, 70); // 2차 검색 포함 → top70
+
+    // 사이트별 균등 선발 — 원티드 편향 방지
+    // 각 사이트에서 rough score 상위 20개씩 뽑아 합산 → 최대 80개
+    const PER_SITE = 20;
+    const sorted = [...allJobs].sort((a, b) => b.score - a.score);
+    const countBySite = {};
+    const top50 = sorted.filter(j => {
+      countBySite[j.site] = (countBySite[j.site] || 0) + 1;
+      return countBySite[j.site] <= PER_SITE;
+    });
+
     if (top50.length === 0) { setAnalyzingMode(false); return; }
 
     setEnrichStatus({ loading: true, done: 0, total: top50.length, error: '' });
@@ -380,13 +390,13 @@ export default function App() {
 
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-    // 절대 스케일 점수화 (상대 정규화 제거)
-    // - calcSimilarityFull은 Jaccard 기반 → 실제 값 범위 0~40 (유사 직무도 보통 20~35)
-    // - rawScore × 2.5 → 진짜 유사한 공고(raw 40)만 100점, 무관한 공고는 낮은 점수 유지
-    // - 상대 정규화(÷maxRaw)는 "최악의 매치도 100점"으로 뻥튀기하는 문제 있었음
+    // 절대 스케일 점수화
+    // - STOP 강화 후 진짜 유사 직무: dutiesOvlp 0.15~0.30 → rawScore 10~20
+    // - multiplier × 4 → raw 25 = 100점 (진짜 유사한 공고만 고점)
+    // - 무관한 공고(raw < 5): 20점 이하 유지
     const enrichedJobs = [...jobMap.current.values()].filter(j => j.enriched);
     for (const job of enrichedJobs) {
-      const score = Math.min(100, Math.round((job._rawScore ?? 0) * 2.5));
+      const score = Math.min(100, Math.round((job._rawScore ?? 0) * 4));
       jobMap.current.set(job.id, { ...job, score });
     }
 
