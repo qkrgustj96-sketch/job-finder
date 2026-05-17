@@ -8,6 +8,7 @@ import { applyExcludes } from './utils/filter.js';
 import { sortByScore } from './utils/scoring.js';
 import { extractRefSections, sortBySimilarity, calcSimilarityFull, extractSecondaryKeywords } from './utils/similarity.js';
 import { fetchJobSections } from './utils/browserEnrich.js';
+import { scrapeJobkoreaBrowser } from './utils/jobkoreaBrowser.js';
 
 const STORAGE_KEY = 'job_finder_saved';
 const PAGE_SIZE = 100;
@@ -68,6 +69,7 @@ export default function App() {
   const [analyzingMode, setAnalyzingMode] = useState(false); // URL 분석 중 로딩 화면
 
   const esRef              = useRef(null);
+  const jkAbortRef         = useRef(null);  // 잡코리아 브라우저 스크레이퍼 AbortController
   const jobMap             = useRef(new Map());
   const stateRef           = useRef({});
   const enrichedRef        = useRef(false); // 현재 검색에서 enrich 실행 여부
@@ -122,6 +124,7 @@ export default function App() {
     locations, empTypes, experiences, educations, companyTypes, industries, minSalary,
   }) => {
     if (esRef.current) { esRef.current.close(); esRef.current = null; }
+    if (jkAbortRef.current) { jkAbortRef.current.abort(); jkAbortRef.current = null; }
 
     setKeyword(kw);
     setJobs([]);
@@ -146,10 +149,46 @@ export default function App() {
       companyType: companyTypes.join(','), minSalary,
     };
 
+    // 잡코리아: Railway IP 차단 → 브라우저에서 Vercel 프록시 경유 직접 수집
+    if (selectedSites.includes('jobkorea')) {
+      const jkAbort = new AbortController();
+      jkAbortRef.current = jkAbort;
+      let jkRank = 1;
+
+      scrapeJobkoreaBrowser(kw, streamParams, (jobs) => {
+        const { excludes: excl, minSalary: sal, kw: k, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes } = stateRef.current;
+        const tagged = jobs.map((j, i) => ({
+          ...j,
+          siteName: SITE_CONFIGS.jobkorea.name,
+          siteColor: SITE_CONFIGS.jobkorea.color,
+          siteRank: jkRank + i,
+        }));
+        jkRank += jobs.length;
+        tagged.forEach(j => jobMap.current.set(j.id, j));
+        setSiteStatus(prev => ({ ...prev, jobkorea: { status: 'loading', count: (prev.jobkorea?.count || 0) + tagged.length } }));
+        const all = [...jobMap.current.values()];
+        const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
+        setJobs(sortJobs(filtered, k, stateRef.current.refJob));
+      }, jkAbort.signal)
+        .then(() => setSiteStatus(prev => ({ ...prev, jobkorea: { ...prev.jobkorea, status: 'done' } })))
+        .catch(() => {
+          setSiteErrors(prev => ({ ...prev, jobkorea: '수집 실패' }));
+          setSiteStatus(prev => ({ ...prev, jobkorea: { ...prev.jobkorea, status: 'error' } }));
+        });
+    }
+
+    // Railway SSE: 잡코리아 제외하고 나머지 사이트
+    const sitesForStream = selectedSites.filter(s => s !== 'jobkorea');
+
     let retryCount = 0;
 
     function startStream() {
-      const es = createJobStream(kw, selectedSites, streamParams);
+      // 스트림할 사이트가 없으면 (잡코리아만 선택) 바로 완료 처리
+      if (sitesForStream.length === 0) {
+        setLoading(false);
+        return;
+      }
+      const es = createJobStream(kw, sitesForStream, streamParams);
       esRef.current = es;
 
       es.onmessage = (e) => {
@@ -207,7 +246,10 @@ export default function App() {
     startStream();
   }, [applyAllFilters, sortJobs]);
 
-  useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
+  useEffect(() => () => {
+    if (esRef.current) esRef.current.close();
+    if (jkAbortRef.current) jkAbortRef.current.abort();
+  }, []);
 
   // 공고 제목에서 검색 키워드 추출
   const deriveSearchKeyword = (title) => {
@@ -338,14 +380,14 @@ export default function App() {
 
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-    // 점수 정규화: 0~100점 (바닥 5점 제거 — 실제 유사도 반영)
+    // 절대 스케일 점수화 (상대 정규화 제거)
+    // - calcSimilarityFull은 Jaccard 기반 → 실제 값 범위 0~40 (유사 직무도 보통 20~35)
+    // - rawScore × 2.5 → 진짜 유사한 공고(raw 40)만 100점, 무관한 공고는 낮은 점수 유지
+    // - 상대 정규화(÷maxRaw)는 "최악의 매치도 100점"으로 뻥튀기하는 문제 있었음
     const enrichedJobs = [...jobMap.current.values()].filter(j => j.enriched);
-    if (enrichedJobs.length > 0) {
-      const maxRaw = Math.max(...enrichedJobs.map(j => j._rawScore ?? 0), 1);
-      for (const job of enrichedJobs) {
-        const normalized = Math.round(((job._rawScore ?? 0) / maxRaw) * 100);
-        jobMap.current.set(job.id, { ...job, score: normalized });
-      }
+    for (const job of enrichedJobs) {
+      const score = Math.min(100, Math.round((job._rawScore ?? 0) * 2.5));
+      jobMap.current.set(job.id, { ...job, score });
     }
 
     flushJobs();
