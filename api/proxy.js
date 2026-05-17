@@ -49,7 +49,7 @@ export default async function handler(req) {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         Accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8',
         'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
         Referer: origin + '/',
         'Cache-Control': 'no-cache',
@@ -66,10 +66,12 @@ export default async function handler(req) {
       });
     }
 
-    const html = await response.text();
-    return new Response(html, {
+    const body = await response.text();
+    // 원본 Content-Type 그대로 전달 (JSON API 응답도 정상 처리)
+    const contentType = response.headers.get('content-type') || 'text/html; charset=utf-8';
+    return new Response(body, {
       status: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS },
+      headers: { 'Content-Type': contentType, ...CORS },
     });
   } catch (e) {
     clearTimeout(timer);

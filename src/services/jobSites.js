@@ -1,8 +1,8 @@
 export const SITE_CONFIGS = {
-  wanted:   { name: '원티드',   color: '#3366FF' },
-  saramin:  { name: '사람인',   color: '#FF6600' },
-  jobkorea: { name: '잡코리아', color: '#0033AA' },
-  incruit:  { name: '인크루트', color: '#009900' },
+  wanted:  { name: '원티드',  color: '#3366FF' },
+  saramin: { name: '사람인',  color: '#FF6600' },
+  jumpit:  { name: '점핏',    color: '#46C3B2' },
+  incruit: { name: '인크루트', color: '#009900' },
 };
 
 export function createJobStream(keyword, selectedSites, filters = {}) {

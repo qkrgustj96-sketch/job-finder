@@ -8,7 +8,7 @@ import { applyExcludes } from './utils/filter.js';
 import { sortByScore } from './utils/scoring.js';
 import { extractRefSections, sortBySimilarity, calcSimilarity, calcSimilarityFull, extractSecondaryKeywords } from './utils/similarity.js';
 import { fetchJobSections } from './utils/browserEnrich.js';
-import { scrapeJobkoreaBrowser } from './utils/jobkoreaBrowser.js';
+import { scrapeJumpitBrowser } from './utils/jumpitBrowser.js';
 
 const STORAGE_KEY = 'job_finder_saved';
 const PAGE_SIZE = 100;
@@ -152,36 +152,36 @@ export default function App() {
       companyType: companyTypes.join(','), minSalary,
     };
 
-    // 잡코리아: Railway IP 차단 → 브라우저에서 Vercel 프록시 경유 직접 수집
-    if (selectedSites.includes('jobkorea')) {
+    // 점핏: JSON API → Vercel 프록시 경유 브라우저 직접 수집
+    if (selectedSites.includes('jumpit')) {
       const jkAbort = new AbortController();
       jkAbortRef.current = jkAbort;
-      let jkRank = 1;
+      let jpRank = 1;
 
-      scrapeJobkoreaBrowser(kw, streamParams, (jobs) => {
+      scrapeJumpitBrowser(kw, streamParams, (jobs) => {
         const { excludes: excl, minSalary: sal, kw: k, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes } = stateRef.current;
         const tagged = jobs.map((j, i) => ({
           ...j,
-          siteName: SITE_CONFIGS.jobkorea.name,
-          siteColor: SITE_CONFIGS.jobkorea.color,
-          siteRank: jkRank + i,
+          siteName: SITE_CONFIGS.jumpit.name,
+          siteColor: SITE_CONFIGS.jumpit.color,
+          siteRank: jpRank + i,
         }));
-        jkRank += jobs.length;
+        jpRank += jobs.length;
         tagged.forEach(j => jobMap.current.set(j.id, j));
-        setSiteStatus(prev => ({ ...prev, jobkorea: { status: 'loading', count: (prev.jobkorea?.count || 0) + tagged.length } }));
+        setSiteStatus(prev => ({ ...prev, jumpit: { status: 'loading', count: (prev.jumpit?.count || 0) + tagged.length } }));
         const all = [...jobMap.current.values()];
         const filtered = applyAllFilters(all, { excludes: excl, minSalary: sal, locations: locs, empTypes: eTypes, industries: inds, companyTypes: cTypes });
         setJobs(sortJobs(filtered, k, stateRef.current.refJob));
       }, jkAbort.signal)
-        .then(() => setSiteStatus(prev => ({ ...prev, jobkorea: { ...prev.jobkorea, status: 'done' } })))
+        .then(() => setSiteStatus(prev => ({ ...prev, jumpit: { ...prev.jumpit, status: 'done' } })))
         .catch(() => {
-          setSiteErrors(prev => ({ ...prev, jobkorea: '수집 실패' }));
-          setSiteStatus(prev => ({ ...prev, jobkorea: { ...prev.jobkorea, status: 'error' } }));
+          setSiteErrors(prev => ({ ...prev, jumpit: '수집 실패' }));
+          setSiteStatus(prev => ({ ...prev, jumpit: { ...prev.jumpit, status: 'error' } }));
         });
     }
 
-    // Railway SSE: 잡코리아 제외하고 나머지 사이트
-    const sitesForStream = selectedSites.filter(s => s !== 'jobkorea');
+    // Railway SSE: 점핏 제외하고 나머지 사이트 (원티드·사람인·인크루트)
+    const sitesForStream = selectedSites.filter(s => s !== 'jumpit');
 
     let retryCount = 0;
 
