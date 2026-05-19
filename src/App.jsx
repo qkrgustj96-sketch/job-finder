@@ -531,8 +531,8 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title" style={{ cursor: 'pointer' }} onClick={() => setPage(1)}>취준 공고 모아보기</h1>
-        <p className="app-subtitle">직무 키워드 하나로 여러 채용 사이트를 한 번에 검색</p>
+        <h1 className="app-title" style={{ cursor: 'pointer' }} onClick={() => { setPage(1); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>취준 공고 모아보기</h1>
+        <p className="app-subtitle">공고 링크를 넣으면 비슷한 공고를 찾아드려요 · 키워드로 여러 사이트를 한 번에 검색</p>
       </header>
 
       <main className="app-main">
